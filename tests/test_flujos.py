@@ -15,6 +15,19 @@ class FakeTelegramSender:
     def send_message(self, chat_id: int, text: str) -> dict[str, object]:
         return {"ok": True, "result": {"chat_id": chat_id, "text": text}}
 
+    def send_poll(self, chat_id: int, question: str, options: list[str]) -> dict[str, object]:
+        return {
+            "ok": True,
+            "result": {
+                "chat_id": chat_id,
+                "poll": {
+                    "question": question,
+                    "options": [{"text": option} for option in options],
+                    "is_anonymous": False,
+                },
+            },
+        }
+
 
 def _asegurar_niveles(session: Session) -> None:
     total = session.execute(
@@ -198,7 +211,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         connection.close()
 
 
-def test_webhook_guarda_barrido_con_ubicacion_y_nivel() -> None:
+def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -244,10 +257,10 @@ def test_webhook_guarda_barrido_con_ubicacion_y_nivel() -> None:
             "/api/telegram/webhook",
             json={
                 "update_id": 11,
-                "message": {
-                    "from": {"id": chat_id, "first_name": "GAD"},
-                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
-                    "text": "4",
+                "poll_answer": {
+                    "poll_id": "poll-test",
+                    "user": {"id": chat_id, "first_name": "GAD"},
+                    "option_ids": [3],
                 },
             },
         )

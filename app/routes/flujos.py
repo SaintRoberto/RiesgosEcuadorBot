@@ -30,6 +30,17 @@ TIPO_BARRIDO = "BARRIDO_GAD"
 TIPO_SEGUIMIENTO = "SEGUIMIENTO_EVENTO"
 PATRON_TELEFONO = re.compile(r"^\+?\d{8,15}$")
 PATRON_TELEFONO_EN_TEXTO = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+OPCIONES_ENCUESTA_LLUVIA = ["Debil", "Moderado", "Fuerte", "Muy fuerte"]
+MAPA_OPCIONES_ENCUESTA_LLUVIA = {
+    0: NivelLluvia.debil,
+    1: NivelLluvia.moderado,
+    2: NivelLluvia.fuerte,
+    3: NivelLluvia.muy_fuerte,
+}
+MENSAJE_SELECCION_NIVEL_LLUVIA = (
+    "Ubicacion recibida. Ahora seleccione el nivel de lluvia:\n\n"
+    "1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte"
+)
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
@@ -249,6 +260,102 @@ def _contacto_por_chat_id(db: Session, chat_id: int) -> TelegramContacto | None:
     ).first()
 
 
+def _contacto_por_telegram_user_id(db: Session, telegram_user_id: int) -> TelegramContacto | None:
+    return db.scalars(
+        select(TelegramContacto).where(
+            TelegramContacto.telegram_user_id == telegram_user_id,
+            TelegramContacto.activo.is_(True),
+        )
+    ).first()
+
+
+def _enviar_encuesta_lluvia_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+    if sender is None:
+        return
+    try:
+        sender.send_poll(
+            chat_id=chat_id,
+            question="Seleccione el nivel de lluvia",
+            options=OPCIONES_ENCUESTA_LLUVIA,
+        )
+    except TelegramDeliveryError:
+        _responder_si_es_posible(sender, chat_id, MENSAJE_SELECCION_NIVEL_LLUVIA)
+
+
+def _nivel_desde_respuesta_encuesta(poll_answer: dict[str, Any]) -> NivelLluvia | None:
+    option_ids = poll_answer.get("option_ids")
+    if not isinstance(option_ids, list) or not option_ids:
+        return None
+    try:
+        option_id = int(option_ids[0])
+    except (TypeError, ValueError):
+        return None
+    return MAPA_OPCIONES_ENCUESTA_LLUVIA.get(option_id)
+
+
+def _recibir_respuesta_encuesta_lluvia(
+    poll_answer: dict[str, Any],
+    db: Session,
+    sender: TelegramSender | None,
+) -> TelegramWebhookRespuesta:
+    user = poll_answer.get("user") or {}
+    telegram_user_id = user.get("id")
+    if telegram_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La respuesta de encuesta no contiene poll_answer.user.id.",
+        )
+
+    nivel = _nivel_desde_respuesta_encuesta(poll_answer)
+    if nivel is None:
+        return TelegramWebhookRespuesta(
+            estado="ENCUESTA_IGNORADA",
+            mensaje="La respuesta de encuesta no contiene una opcion valida.",
+        )
+
+    contacto = _contacto_por_telegram_user_id(db, int(telegram_user_id))
+    if contacto is None:
+        return TelegramWebhookRespuesta(
+            estado="CONTACTO_NO_REGISTRADO",
+            mensaje="No existe contacto activo para este usuario de Telegram.",
+        )
+
+    registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
+    ubicacion = (registro.parametros or {}).get("ubicacion_pendiente") if registro else None
+    if not ubicacion:
+        _responder_si_es_posible(
+            sender,
+            contacto.chat_id,
+            "Primero comparta su ubicacion actual usando Telegram.",
+        )
+        return TelegramWebhookRespuesta(
+            estado="UBICACION_REQUERIDA",
+            mensaje="Se recibio el nivel por encuesta, pero no hay ubicacion pendiente.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    option_id = int(poll_answer["option_ids"][0])
+    registro, barrido, nivel_evento = _guardar_barrido(
+        db=db,
+        contacto=contacto,
+        nivel=nivel,
+        latitud=float(ubicacion["latitud"]),
+        longitud=float(ubicacion["longitud"]),
+        registro=registro,
+        observacion=f"Nivel recibido por encuesta Telegram: {option_id + 1}",
+    )
+    _responder_si_es_posible(sender, contacto.chat_id, "Barrido guardado correctamente.")
+    return TelegramWebhookRespuesta(
+        estado="BARRIDO_REGISTRADO",
+        mensaje=f"Barrido guardado con nivel {nivel_evento.nombre}.",
+        contacto_id=contacto.id,
+        telefono=contacto.telefono,
+        chat_id=contacto.chat_id,
+    )
+
+
 @router.post(
     "/webhook",
     response_model=TelegramWebhookRespuesta,
@@ -260,6 +367,10 @@ def recibir_webhook_telegram(
     db: Session = Depends(get_db),
     sender: TelegramSender | None = Depends(get_optional_telegram_sender),
 ) -> TelegramWebhookRespuesta:
+    poll_answer = update.get("poll_answer")
+    if isinstance(poll_answer, dict):
+        return _recibir_respuesta_encuesta_lluvia(poll_answer, db, sender)
+
     message = update.get("message") or update.get("edited_message")
     if not isinstance(message, dict):
         return TelegramWebhookRespuesta(estado="IGNORADO", mensaje="Update sin mensaje.")
@@ -328,11 +439,7 @@ def recibir_webhook_telegram(
         registro.estado = "PROCESANDO"
         db.commit()
         db.refresh(registro)
-        _responder_si_es_posible(
-            sender,
-            int(chat_id),
-            "Ubicacion recibida. Ahora seleccione el nivel de lluvia:\n\n1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte",
-        )
+        _enviar_encuesta_lluvia_si_es_posible(sender, int(chat_id))
         return TelegramWebhookRespuesta(
             estado="UBICACION_RECIBIDA",
             mensaje="Ubicacion guardada temporalmente para el barrido.",
