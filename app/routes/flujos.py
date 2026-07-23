@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from app.schemas import (
     CrearBoletinRequest,
     CrearSeguimientoEventoRequest,
     EnvioFlujoRespuesta,
+    FotoEventoRespuesta,
     MAPA_NIVELES_LLUVIAS,
     NivelLluvia,
     RegistrarBarridoRequest,
@@ -1341,6 +1342,41 @@ def registrar_respuesta_barrido(
         latitud=float(barrido.latitud),
         longitud=float(barrido.longitud),
     )
+
+
+@router.get(
+    "/eventos/fotos",
+    response_model=list[FotoEventoRespuesta],
+    tags=["eventos"],
+    summary="Listar fotos de reportes de eventos",
+)
+def listar_fotos_eventos(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> list[FotoEventoRespuesta]:
+    eventos = list(
+        db.scalars(
+            select(TelegramEvento)
+            .where(
+                TelegramEvento.activo.is_(True),
+                TelegramEvento.foto_file_id.is_not(None),
+            )
+            .order_by(TelegramEvento.fecha_reporte.desc())
+        )
+    )
+    return [
+        FotoEventoRespuesta(
+            evento_id=evento.id,
+            contacto_id=evento.contacto_id,
+            descripcion=evento.descripcion,
+            latitud=float(evento.latitud),
+            longitud=float(evento.longitud),
+            fecha_reporte=evento.fecha_reporte.isoformat(),
+            foto_url=str(request.url_for("obtener_foto_evento", evento_id=evento.id)),
+            foto_file_unique_id=evento.foto_file_unique_id,
+        )
+        for evento in eventos
+    ]
 
 
 @router.get(

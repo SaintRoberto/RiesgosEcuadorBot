@@ -138,6 +138,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/boletines" in paths
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
+    assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
     assert "/api/telegram/eventos/seguimientos" in paths
 
@@ -646,6 +647,68 @@ def test_endpoint_obtener_foto_evento_devuelve_imagen() -> None:
         assert respuesta.status_code == 200
         assert respuesta.headers["content-type"] == "image/jpeg"
         assert respuesta.content.startswith(b"\xff\xd8")
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_endpoint_lista_fotos_eventos() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593009{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_tabla_eventos(session)
+        contacto_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                RETURNING id
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        ).scalar_one()
+        evento_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_eventos
+                    (contacto_id, descripcion, foto_file_id, foto_file_unique_id, latitud, longitud)
+                VALUES
+                    (:contacto_id, :descripcion, :foto_file_id, :foto_file_unique_id, :latitud, :longitud)
+                RETURNING id
+                """
+            ),
+            {
+                "contacto_id": contacto_id,
+                "descripcion": "Evento listado",
+                "foto_file_id": "foto-listada",
+                "foto_file_unique_id": "foto-listada-unique",
+                "latitud": -0.1806532,
+                "longitud": -78.4678382,
+            },
+        ).scalar_one()
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        client = TestClient(app)
+
+        respuesta = client.get("/api/telegram/eventos/fotos")
+
+        assert respuesta.status_code == 200
+        data = respuesta.json()
+        item = next(evento for evento in data if evento["evento_id"] == evento_id)
+        assert item["descripcion"] == "Evento listado"
+        assert item["foto_file_unique_id"] == "foto-listada-unique"
+        assert item["foto_url"].endswith(f"/api/telegram/eventos/{evento_id}/foto")
     finally:
         app.dependency_overrides.clear()
         session.close()

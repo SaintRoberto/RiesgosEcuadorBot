@@ -105,3 +105,14 @@ class TelegramWebhookRespuesta(BaseModel):
     contacto_id: int | None = None
     telefono: str | None = None
     chat_id: int | None = None
+
+
+class FotoEventoRespuesta(BaseModel):
+    evento_id: int
+    contacto_id: int
+    descripcion: str
+    latitud: float
+    longitud: float
+    fecha_reporte: str
+    foto_url: str
+    foto_file_unique_id: str | None = None
