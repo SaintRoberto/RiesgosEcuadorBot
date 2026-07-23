@@ -48,6 +48,8 @@ MENSAJE_SOLICITAR_UBICACION = "Hola. Comparta su ubicacion actual usando Telegra
 MENSAJE_MENU_PRINCIPAL = "Bienvenido. Seleccione una opcion:"
 OPCION_REPORTE_BARRIDO = "Reporte de barrido"
 OPCION_REPORTE_EVENTO = "Reporte de evento"
+CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
+CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
@@ -299,12 +301,10 @@ def _consulta_activa_por_contacto_y_tipo(
 
 def _teclado_menu_principal() -> dict[str, Any]:
     return {
-        "keyboard": [
-            [{"text": OPCION_REPORTE_BARRIDO}],
-            [{"text": OPCION_REPORTE_EVENTO}],
+        "inline_keyboard": [
+            [{"text": OPCION_REPORTE_BARRIDO, "callback_data": CALLBACK_REPORTE_BARRIDO}],
+            [{"text": OPCION_REPORTE_EVENTO, "callback_data": CALLBACK_REPORTE_EVENTO}],
         ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
     }
 
 
@@ -315,6 +315,15 @@ def _mostrar_menu_principal_si_es_posible(sender: TelegramSender | None, chat_id
         MENSAJE_MENU_PRINCIPAL,
         reply_markup=_teclado_menu_principal(),
     )
+
+
+def _responder_callback_si_es_posible(sender: TelegramSender | None, callback_query_id: str | None) -> None:
+    if sender is None or not callback_query_id:
+        return
+    try:
+        sender.answer_callback_query(callback_query_id=callback_query_id)
+    except TelegramDeliveryError:
+        return
 
 
 def _teclado_solicitar_ubicacion() -> dict[str, Any]:
@@ -459,6 +468,53 @@ def _iniciar_reporte_barrido(
     _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
 
 
+def _seleccionar_reporte_barrido(
+    db: Session,
+    contacto: TelegramContacto,
+    sender: TelegramSender | None,
+) -> TelegramWebhookRespuesta:
+    if not contacto.telefono:
+        _responder_si_es_posible(
+            sender,
+            contacto.chat_id,
+            "Primero registre su numero institucional con /registrar.",
+        )
+        return TelegramWebhookRespuesta(
+            estado="TELEFONO_REQUERIDO",
+            mensaje="El contacto debe registrar su telefono antes del reporte de barrido.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    _iniciar_reporte_barrido(db, contacto, sender)
+    return TelegramWebhookRespuesta(
+        estado="REPORTE_BARRIDO_INICIADO",
+        mensaje="Se solicito compartir ubicacion para el reporte de barrido.",
+        contacto_id=contacto.id,
+        telefono=contacto.telefono,
+        chat_id=contacto.chat_id,
+    )
+
+
+def _seleccionar_reporte_evento(
+    contacto: TelegramContacto,
+    sender: TelegramSender | None,
+) -> TelegramWebhookRespuesta:
+    _responder_si_es_posible(
+        sender,
+        contacto.chat_id,
+        "Reporte de evento seleccionado. Este flujo sera configurado en el siguiente paso.",
+    )
+    return TelegramWebhookRespuesta(
+        estado="REPORTE_EVENTO_INICIADO",
+        mensaje="Flujo de reporte de evento seleccionado.",
+        contacto_id=contacto.id,
+        telefono=contacto.telefono,
+        chat_id=contacto.chat_id,
+    )
+
+
 def _enviar_encuesta_lluvia_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
     if sender is None:
         return
@@ -546,6 +602,47 @@ def _recibir_respuesta_encuesta_lluvia(
     )
 
 
+def _recibir_callback_menu_principal(
+    callback_query: dict[str, Any],
+    db: Session,
+    sender: TelegramSender | None,
+) -> TelegramWebhookRespuesta:
+    _responder_callback_si_es_posible(sender, callback_query.get("id"))
+
+    origen = callback_query.get("from") or {}
+    message = callback_query.get("message") or {}
+    chat = message.get("chat") or {}
+    data = callback_query.get("data")
+    chat_id = chat.get("id")
+    telegram_user_id = origen.get("id") or chat_id
+    if chat_id is None or telegram_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El callback no contiene message.chat.id.",
+        )
+
+    contacto = _upsert_contacto_telegram(
+        db=db,
+        chat_id=int(chat_id),
+        telegram_user_id=int(telegram_user_id),
+        nombres=_nombre_desde_update(origen, chat),
+    )
+
+    if data == CALLBACK_REPORTE_BARRIDO:
+        return _seleccionar_reporte_barrido(db, contacto, sender)
+    if data == CALLBACK_REPORTE_EVENTO:
+        return _seleccionar_reporte_evento(contacto, sender)
+
+    _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+    return TelegramWebhookRespuesta(
+        estado="CALLBACK_IGNORADO",
+        mensaje="Callback recibido, pero no coincide con una opcion del menu.",
+        contacto_id=contacto.id,
+        telefono=contacto.telefono,
+        chat_id=contacto.chat_id,
+    )
+
+
 @router.post(
     "/webhook",
     response_model=TelegramWebhookRespuesta,
@@ -560,6 +657,10 @@ def recibir_webhook_telegram(
     poll_answer = update.get("poll_answer")
     if isinstance(poll_answer, dict):
         return _recibir_respuesta_encuesta_lluvia(poll_answer, db, sender)
+
+    callback_query = update.get("callback_query")
+    if isinstance(callback_query, dict):
+        return _recibir_callback_menu_principal(callback_query, db, sender)
 
     message = update.get("message") or update.get("edited_message")
     if not isinstance(message, dict):
@@ -617,27 +718,7 @@ def recibir_webhook_telegram(
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        if not contacto.telefono:
-            _responder_si_es_posible(
-                sender,
-                int(chat_id),
-                "Primero registre su numero institucional con /registrar.",
-            )
-            return TelegramWebhookRespuesta(
-                estado="TELEFONO_REQUERIDO",
-                mensaje="El contacto debe registrar su telefono antes del reporte de barrido.",
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
-            )
-        _iniciar_reporte_barrido(db, contacto, sender)
-        return TelegramWebhookRespuesta(
-            estado="REPORTE_BARRIDO_INICIADO",
-            mensaje="Se solicito compartir ubicacion para el reporte de barrido.",
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
-        )
+        return _seleccionar_reporte_barrido(db, contacto, sender)
 
     if _es_opcion_reporte_evento(texto):
         contacto = _upsert_contacto_telegram(
@@ -646,18 +727,7 @@ def recibir_webhook_telegram(
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        _responder_si_es_posible(
-            sender,
-            int(chat_id),
-            "Reporte de evento seleccionado. Este flujo sera configurado en el siguiente paso.",
-        )
-        return TelegramWebhookRespuesta(
-            estado="REPORTE_EVENTO_INICIADO",
-            mensaje="Flujo de reporte de evento seleccionado.",
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
-        )
+        return _seleccionar_reporte_evento(contacto, sender)
 
     location = message.get("location")
     if isinstance(location, dict):

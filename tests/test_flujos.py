@@ -36,6 +36,9 @@ class FakeTelegramSender:
             },
         }
 
+    def answer_callback_query(self, callback_query_id: str) -> dict[str, object]:
+        return {"ok": True, "result": True, "callback_query_id": callback_query_id}
+
 
 def _asegurar_niveles(session: Session) -> None:
     total = session.execute(
@@ -265,10 +268,13 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
             "/api/telegram/webhook",
             json={
                 "update_id": 9,
-                "message": {
+                "callback_query": {
+                    "id": "callback-barrido",
                     "from": {"id": chat_id, "first_name": "GAD"},
-                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
-                    "text": "Reporte de barrido",
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "REPORTE_BARRIDO",
                 },
             },
         )
@@ -391,10 +397,13 @@ def test_webhook_reporte_evento_queda_seleccionado() -> None:
             "/api/telegram/webhook",
             json={
                 "update_id": 30,
-                "message": {
+                "callback_query": {
+                    "id": "callback-evento",
                     "from": {"id": chat_id, "first_name": "GAD"},
-                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
-                    "text": "Reporte de evento",
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "REPORTE_EVENTO",
                 },
             },
         )

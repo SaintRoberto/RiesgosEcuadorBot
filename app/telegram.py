@@ -19,6 +19,9 @@ class TelegramSender(Protocol):
     def send_poll(self, chat_id: int, question: str, options: list[str]) -> dict[str, Any]:
         pass
 
+    def answer_callback_query(self, callback_query_id: str) -> dict[str, Any]:
+        pass
+
 
 class TelegramDeliveryError(RuntimeError):
     pass
@@ -76,6 +79,9 @@ class TelegramBotSender:
                 "allows_revoting": False,
             },
         )
+
+    def answer_callback_query(self, callback_query_id: str) -> dict[str, Any]:
+        return self._post("answerCallbackQuery", {"callback_query_id": callback_query_id})
 
 
 def get_telegram_sender() -> TelegramSender:
