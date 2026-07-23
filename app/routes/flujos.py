@@ -41,6 +41,7 @@ MENSAJE_SELECCION_NIVEL_LLUVIA = (
     "Ubicacion recibida. Ahora seleccione el nivel de lluvia:\n\n"
     "1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte"
 )
+MENSAJE_SOLICITAR_UBICACION = "Hola. Comparta su ubicacion actual usando Telegram para registrar el barrido."
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
@@ -242,11 +243,16 @@ def _upsert_contacto_telegram(
     return contacto
 
 
-def _responder_si_es_posible(sender: TelegramSender | None, chat_id: int, texto: str) -> None:
+def _responder_si_es_posible(
+    sender: TelegramSender | None,
+    chat_id: int,
+    texto: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> None:
     if sender is None:
         return
     try:
-        sender.send_message(chat_id=chat_id, text=texto)
+        sender.send_message(chat_id=chat_id, text=texto, reply_markup=reply_markup)
     except TelegramDeliveryError:
         return
 
@@ -267,6 +273,23 @@ def _contacto_por_telegram_user_id(db: Session, telegram_user_id: int) -> Telegr
             TelegramContacto.activo.is_(True),
         )
     ).first()
+
+
+def _teclado_solicitar_ubicacion() -> dict[str, Any]:
+    return {
+        "keyboard": [[{"text": "Compartir ubicacion", "request_location": True}]],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+    }
+
+
+def _solicitar_ubicacion_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(
+        sender,
+        chat_id,
+        MENSAJE_SOLICITAR_UBICACION,
+        reply_markup=_teclado_solicitar_ubicacion(),
+    )
 
 
 def _enviar_encuesta_lluvia_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
@@ -395,14 +418,17 @@ def recibir_webhook_telegram(
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        _responder_si_es_posible(
-            sender,
-            int(chat_id),
-            "Bienvenido. Por favor envie su numero de telefono institucional. Ejemplo: +593987223658",
-        )
+        if contacto.telefono:
+            _solicitar_ubicacion_si_es_posible(sender, int(chat_id))
+        else:
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                "Bienvenido. Por favor envie su numero de telefono institucional. Ejemplo: +593987223658",
+            )
         return TelegramWebhookRespuesta(
             estado="ESPERANDO_TELEFONO",
-            mensaje="Contacto inicial registrado. Se solicito el telefono.",
+            mensaje="Contacto inicial registrado.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -506,10 +532,21 @@ def recibir_webhook_telegram(
             nombres=nombres,
             telefono=telefono,
         )
-        _responder_si_es_posible(sender, int(chat_id), "Registro guardado correctamente.")
+        _solicitar_ubicacion_si_es_posible(sender, int(chat_id))
         return TelegramWebhookRespuesta(
             estado="REGISTRADO",
-            mensaje="Telefono vinculado al chat_id.",
+            mensaje="Telefono vinculado al chat_id. Se solicito la ubicacion.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    contacto = _contacto_por_chat_id(db, int(chat_id))
+    if contacto and contacto.telefono:
+        _solicitar_ubicacion_si_es_posible(sender, int(chat_id))
+        return TelegramWebhookRespuesta(
+            estado="UBICACION_REQUERIDA",
+            mensaje="Contacto registrado. Se solicito compartir ubicacion.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,

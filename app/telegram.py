@@ -8,7 +8,12 @@ from app.config import get_settings
 
 
 class TelegramSender(Protocol):
-    def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         pass
 
     def send_poll(self, chat_id: int, question: str, options: list[str]) -> dict[str, Any]:
@@ -47,8 +52,16 @@ class TelegramBotSender:
             raise TelegramDeliveryError(f"Telegram respondio con error: {data}")
         return data
 
-    def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
-        return self._post("sendMessage", {"chat_id": chat_id, "text": text})
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        return self._post("sendMessage", payload)
 
     def send_poll(self, chat_id: int, question: str, options: list[str]) -> dict[str, Any]:
         return self._post(

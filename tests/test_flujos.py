@@ -12,8 +12,16 @@ from app.telegram import get_optional_telegram_sender, get_telegram_sender
 
 
 class FakeTelegramSender:
-    def send_message(self, chat_id: int, text: str) -> dict[str, object]:
-        return {"ok": True, "result": {"chat_id": chat_id, "text": text}}
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        result = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            result["reply_markup"] = reply_markup
+        return {"ok": True, "result": result}
 
     def send_poll(self, chat_id: int, question: str, options: list[str]) -> dict[str, object]:
         return {
@@ -281,6 +289,55 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         assert row["nivel_id"] == 4
         assert float(row["latitud"]) == -0.1806532
         assert float(row["longitud"]) == -78.4678382
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_contacto_registrado_solicita_ubicacion_con_texto() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593004{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 20,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "hola",
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "UBICACION_REQUERIDA"
+        assert respuesta.json()["telefono"] == telefono
     finally:
         app.dependency_overrides.clear()
         session.close()
