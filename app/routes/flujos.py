@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -55,12 +55,26 @@ OPCION_REPORTE_BARRIDO = "Reporte de barrido"
 OPCION_REPORTE_EVENTO = "Reporte de evento"
 CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
+MEDIA_TYPE_POR_EXTENSION = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
     if valor:
         return valor
     return f"{prefix}-{(fecha or date.today()).isoformat()}"
+
+
+def _media_type_desde_file_path(file_path: str) -> str:
+    path = file_path.lower()
+    for extension, media_type in MEDIA_TYPE_POR_EXTENSION.items():
+        if path.endswith(extension):
+            return media_type
+    return "application/octet-stream"
 
 
 def _contactos_activos_por_telefono(db: Session, telefonos: list[str]) -> list[TelegramContacto]:
@@ -1326,6 +1340,53 @@ def registrar_respuesta_barrido(
         nivel_id=nivel_evento.id,
         latitud=float(barrido.latitud),
         longitud=float(barrido.longitud),
+    )
+
+
+@router.get(
+    "/eventos/{evento_id}/foto",
+    response_class=Response,
+    tags=["eventos"],
+    summary="Ver foto de un reporte de evento",
+    responses={
+        200: {"content": {"image/jpeg": {}, "image/png": {}, "image/webp": {}}},
+        404: {"description": "Evento no encontrado o sin foto."},
+        502: {"description": "No se pudo obtener la foto desde Telegram."},
+    },
+)
+def obtener_foto_evento(
+    evento_id: int,
+    db: Session = Depends(get_db),
+    sender: TelegramSender = Depends(get_telegram_sender),
+) -> Response:
+    evento = db.get(TelegramEvento, evento_id)
+    if evento is None or not evento.activo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evento no encontrado.",
+        )
+    if not evento.foto_file_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El evento no tiene foto registrada.",
+        )
+
+    try:
+        file_response = sender.get_file(evento.foto_file_id)
+        file_path = file_response.get("result", {}).get("file_path")
+        if not file_path:
+            raise TelegramDeliveryError("Telegram no devolvio file_path para la foto.")
+        content = sender.download_file(str(file_path))
+    except TelegramDeliveryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo obtener la foto desde Telegram.",
+        ) from exc
+
+    return Response(
+        content=content,
+        media_type=_media_type_desde_file_path(str(file_path)),
+        headers={"Cache-Control": "private, max-age=300"},
     )
 
 

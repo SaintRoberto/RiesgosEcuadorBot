@@ -22,6 +22,12 @@ class TelegramSender(Protocol):
     def answer_callback_query(self, callback_query_id: str) -> dict[str, Any]:
         pass
 
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        pass
+
+    def download_file(self, file_path: str) -> bytes:
+        pass
+
 
 class TelegramDeliveryError(RuntimeError):
     pass
@@ -82,6 +88,24 @@ class TelegramBotSender:
 
     def answer_callback_query(self, callback_query_id: str) -> dict[str, Any]:
         return self._post("answerCallbackQuery", {"callback_query_id": callback_query_id})
+
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        return self._post("getFile", {"file_id": file_id})
+
+    def download_file(self, file_path: str) -> bytes:
+        http_request = request.Request(
+            f"https://api.telegram.org/file/bot{self._token}/{file_path}",
+            method="GET",
+        )
+
+        try:
+            with request.urlopen(http_request, timeout=self._timeout) as response:
+                return response.read()
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise TelegramDeliveryError(f"Telegram rechazo la descarga del archivo: {detail}") from exc
+        except OSError as exc:
+            raise TelegramDeliveryError(f"No se pudo descargar el archivo de Telegram: {exc}") from exc
 
 
 def get_telegram_sender() -> TelegramSender:
