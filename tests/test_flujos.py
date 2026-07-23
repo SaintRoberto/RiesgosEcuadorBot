@@ -179,13 +179,27 @@ def test_webhook_registra_contacto_con_telefono() -> None:
             },
         )
         assert start.status_code == 200
-        assert start.json()["estado"] == "ESPERANDO_TELEFONO"
+        assert start.json()["estado"] == "MENU_PRINCIPAL"
+
+        registrar = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 2,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "David"},
+                    "chat": {"id": chat_id, "first_name": "David", "type": "private"},
+                    "text": "/registrar",
+                },
+            },
+        )
+        assert registrar.status_code == 200
+        assert registrar.json()["estado"] == "ESPERANDO_TELEFONO"
 
         mensaje = f"mi numero {telefono}"
         registro = client.post(
             "/api/telegram/webhook",
             json={
-                "update_id": 2,
+                "update_id": 3,
                 "message": {
                     "from": {"id": chat_id, "first_name": "David"},
                     "chat": {"id": chat_id, "first_name": "David", "type": "private"},
@@ -247,6 +261,20 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
         client = TestClient(app)
 
+        seleccion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 9,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "Reporte de barrido",
+                },
+            },
+        )
+        assert seleccion.status_code == 200
+        assert seleccion.json()["estado"] == "REPORTE_BARRIDO_INICIADO"
+
         ubicacion = client.post(
             "/api/telegram/webhook",
             json={
@@ -296,7 +324,7 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         connection.close()
 
 
-def test_webhook_contacto_registrado_solicita_ubicacion_con_texto() -> None:
+def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -336,8 +364,122 @@ def test_webhook_contacto_registrado_solicita_ubicacion_con_texto() -> None:
         )
 
         assert respuesta.status_code == 200
-        assert respuesta.json()["estado"] == "UBICACION_REQUERIDA"
+        assert respuesta.json()["estado"] == "MENU_PRINCIPAL"
         assert respuesta.json()["telefono"] == telefono
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_reporte_evento_queda_seleccionado() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 30,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "Reporte de evento",
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "REPORTE_EVENTO_INICIADO"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_no_permite_registrar_telefono_de_otra_cuenta() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593005{uuid4().int % 1000000:06d}"
+    chat_id_existente = -(uuid4().int % 1000000000)
+    chat_id_nuevo = -(uuid4().int % 1000000000)
+
+    try:
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {
+                "telegram_user_id": chat_id_existente,
+                "chat_id": chat_id_existente,
+                "telefono": telefono,
+            },
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        registrar = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 40,
+                "message": {
+                    "from": {"id": chat_id_nuevo, "first_name": "Nuevo"},
+                    "chat": {"id": chat_id_nuevo, "first_name": "Nuevo", "type": "private"},
+                    "text": "/registrar",
+                },
+            },
+        )
+        assert registrar.status_code == 200
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 41,
+                "message": {
+                    "from": {"id": chat_id_nuevo, "first_name": "Nuevo"},
+                    "chat": {"id": chat_id_nuevo, "first_name": "Nuevo", "type": "private"},
+                    "text": telefono,
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "TELEFONO_YA_REGISTRADO"
+
+        row = session.execute(
+            text(
+                """
+                SELECT telegram_user_id, chat_id
+                FROM telegram_contactos
+                WHERE telefono = :telefono
+                """
+            ),
+            {"telefono": telefono},
+        ).mappings().one()
+        assert row["telegram_user_id"] == chat_id_existente
+        assert row["chat_id"] == chat_id_existente
     finally:
         app.dependency_overrides.clear()
         session.close()

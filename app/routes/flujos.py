@@ -28,6 +28,9 @@ router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 TIPO_BOLETIN = "BOLETIN_DIARIO"
 TIPO_BARRIDO = "BARRIDO_GAD"
 TIPO_SEGUIMIENTO = "SEGUIMIENTO_EVENTO"
+TIPO_REGISTRO_TELEFONO = "REGISTRO_TELEFONO"
+FLUJO_REPORTE_BARRIDO = "REPORTE_BARRIDO"
+FLUJO_REPORTE_EVENTO = "REPORTE_EVENTO"
 PATRON_TELEFONO = re.compile(r"^\+?\d{8,15}$")
 PATRON_TELEFONO_EN_TEXTO = re.compile(r"\+?\d[\d\s().-]{6,}\d")
 OPCIONES_ENCUESTA_LLUVIA = ["Debil", "Moderado", "Fuerte", "Muy fuerte"]
@@ -42,6 +45,9 @@ MENSAJE_SELECCION_NIVEL_LLUVIA = (
     "1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte"
 )
 MENSAJE_SOLICITAR_UBICACION = "Hola. Comparta su ubicacion actual usando Telegram para registrar el barrido."
+MENSAJE_MENU_PRINCIPAL = "Bienvenido. Seleccione una opcion:"
+OPCION_REPORTE_BARRIDO = "Reporte de barrido"
+OPCION_REPORTE_EVENTO = "Reporte de evento"
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
@@ -275,6 +281,42 @@ def _contacto_por_telegram_user_id(db: Session, telegram_user_id: int) -> Telegr
     ).first()
 
 
+def _consulta_activa_por_contacto_y_tipo(
+    db: Session,
+    contacto_id: int,
+    tipo_consulta: str,
+) -> TelegramConsulta | None:
+    return db.scalars(
+        select(TelegramConsulta)
+        .where(
+            TelegramConsulta.contacto_id == contacto_id,
+            TelegramConsulta.tipo_consulta == tipo_consulta,
+            TelegramConsulta.estado.in_(["PENDIENTE", "PROCESANDO"]),
+        )
+        .order_by(TelegramConsulta.fecha_consulta.desc())
+    ).first()
+
+
+def _teclado_menu_principal() -> dict[str, Any]:
+    return {
+        "keyboard": [
+            [{"text": OPCION_REPORTE_BARRIDO}],
+            [{"text": OPCION_REPORTE_EVENTO}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+    }
+
+
+def _mostrar_menu_principal_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(
+        sender,
+        chat_id,
+        MENSAJE_MENU_PRINCIPAL,
+        reply_markup=_teclado_menu_principal(),
+    )
+
+
 def _teclado_solicitar_ubicacion() -> dict[str, Any]:
     return {
         "keyboard": [[{"text": "Compartir ubicacion", "request_location": True}]],
@@ -290,6 +332,131 @@ def _solicitar_ubicacion_si_es_posible(sender: TelegramSender | None, chat_id: i
         MENSAJE_SOLICITAR_UBICACION,
         reply_markup=_teclado_solicitar_ubicacion(),
     )
+
+
+def _iniciar_registro_telefono(
+    db: Session,
+    contacto: TelegramContacto,
+    sender: TelegramSender | None,
+) -> None:
+    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_REGISTRO_TELEFONO)
+    if registro is None:
+        registro = TelegramConsulta(
+            contacto_id=contacto.id,
+            usuario_id=contacto.usuario_id,
+            tipo_consulta=TIPO_REGISTRO_TELEFONO,
+            consulta="Solicitud de registro de telefono institucional",
+            parametros={"flujo": TIPO_REGISTRO_TELEFONO},
+            estado="PROCESANDO",
+        )
+        db.add(registro)
+    else:
+        registro.estado = "PROCESANDO"
+    db.commit()
+    _responder_si_es_posible(
+        sender,
+        contacto.chat_id,
+        "Por favor envie su numero de telefono institucional. Ejemplo: +593987223658",
+    )
+
+
+def _registrar_telefono_pendiente(
+    db: Session,
+    contacto: TelegramContacto,
+    telegram_user_id: int,
+    chat_id: int,
+    nombres: str | None,
+    telefono: str,
+) -> tuple[str, str, TelegramContacto]:
+    existente = db.scalars(select(TelegramContacto).where(TelegramContacto.telefono == telefono)).first()
+    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_REGISTRO_TELEFONO)
+
+    if existente and existente.id != contacto.id:
+        if existente.telegram_user_id != telegram_user_id:
+            if registro:
+                registro.estado = "COMPLETADA"
+                registro.fecha_respuesta = datetime.now(timezone.utc)
+                registro.respuesta = {"telefono": telefono, "estado": "YA_REGISTRADO_OTRA_CUENTA"}
+            db.commit()
+            return "TELEFONO_YA_REGISTRADO", "Este numero ya esta registrado con otra cuenta de Telegram.", contacto
+        contacto = existente
+
+    contacto.telegram_user_id = telegram_user_id
+    contacto.chat_id = chat_id
+    contacto.nombres = nombres or contacto.nombres
+    contacto.activo = True
+    if contacto.telefono == telefono:
+        mensaje = "Este numero ya esta registrado para su cuenta."
+        estado = "TELEFONO_YA_REGISTRADO"
+    else:
+        contacto.telefono = telefono
+        mensaje = "Registro guardado correctamente."
+        estado = "REGISTRADO"
+
+    if registro:
+        registro.estado = "COMPLETADA"
+        registro.fecha_respuesta = datetime.now(timezone.utc)
+        registro.respuesta = {"telefono": telefono, "estado": estado}
+    db.commit()
+    return estado, mensaje, contacto
+
+
+def _texto_normalizado(texto: str) -> str:
+    return texto.strip().lower()
+
+
+def _es_inicio_o_menu(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado.startswith("/start") or normalizado in {"hola", "menu", "inicio"}
+
+
+def _es_comando_registro(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado.startswith("/registrar") or normalizado in {
+        "registrar",
+        "registrar numero",
+        "registrar número",
+    }
+
+
+def _es_opcion_reporte_barrido(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado in {"1", "1.", "1)", "barrido", "reporte de barrido"}
+
+
+def _es_opcion_reporte_evento(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado in {"2", "2.", "2)", "evento", "reporte de evento"}
+
+
+def _iniciar_reporte_barrido(
+    db: Session,
+    contacto: TelegramContacto,
+    sender: TelegramSender | None,
+) -> None:
+    registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
+    if registro is None:
+        registro = TelegramConsulta(
+            contacto_id=contacto.id,
+            usuario_id=contacto.usuario_id,
+            tipo_consulta=TIPO_BARRIDO,
+            consulta="Reporte de barrido iniciado desde Telegram",
+            parametros={
+                "canal": "TELEGRAM",
+                "flujo": FLUJO_REPORTE_BARRIDO,
+                "telefono": contacto.telefono,
+            },
+            estado="PROCESANDO",
+        )
+        db.add(registro)
+    else:
+        parametros = dict(registro.parametros or {})
+        parametros["flujo"] = FLUJO_REPORTE_BARRIDO
+        parametros["telefono"] = contacto.telefono
+        registro.parametros = parametros
+        registro.estado = "PROCESANDO"
+    db.commit()
+    _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
 
 
 def _enviar_encuesta_lluvia_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
@@ -411,24 +578,82 @@ def recibir_webhook_telegram(
 
     nombres = _nombre_desde_update(origen, chat)
 
-    if texto.lower().startswith("/start"):
+    if _es_inicio_o_menu(texto):
         contacto = _upsert_contacto_telegram(
             db=db,
             chat_id=int(chat_id),
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        if contacto.telefono:
-            _solicitar_ubicacion_si_es_posible(sender, int(chat_id))
-        else:
+        _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+        return TelegramWebhookRespuesta(
+            estado="MENU_PRINCIPAL",
+            mensaje="Contacto inicial registrado. Se mostro el menu principal.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    if _es_comando_registro(texto):
+        contacto = _upsert_contacto_telegram(
+            db=db,
+            chat_id=int(chat_id),
+            telegram_user_id=int(telegram_user_id),
+            nombres=nombres,
+        )
+        _iniciar_registro_telefono(db, contacto, sender)
+        return TelegramWebhookRespuesta(
+            estado="ESPERANDO_TELEFONO",
+            mensaje="Se solicito el telefono institucional.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    if _es_opcion_reporte_barrido(texto):
+        contacto = _upsert_contacto_telegram(
+            db=db,
+            chat_id=int(chat_id),
+            telegram_user_id=int(telegram_user_id),
+            nombres=nombres,
+        )
+        if not contacto.telefono:
             _responder_si_es_posible(
                 sender,
                 int(chat_id),
-                "Bienvenido. Por favor envie su numero de telefono institucional. Ejemplo: +593987223658",
+                "Primero registre su numero institucional con /registrar.",
             )
+            return TelegramWebhookRespuesta(
+                estado="TELEFONO_REQUERIDO",
+                mensaje="El contacto debe registrar su telefono antes del reporte de barrido.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        _iniciar_reporte_barrido(db, contacto, sender)
         return TelegramWebhookRespuesta(
-            estado="ESPERANDO_TELEFONO",
-            mensaje="Contacto inicial registrado.",
+            estado="REPORTE_BARRIDO_INICIADO",
+            mensaje="Se solicito compartir ubicacion para el reporte de barrido.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    if _es_opcion_reporte_evento(texto):
+        contacto = _upsert_contacto_telegram(
+            db=db,
+            chat_id=int(chat_id),
+            telegram_user_id=int(telegram_user_id),
+            nombres=nombres,
+        )
+        _responder_si_es_posible(
+            sender,
+            int(chat_id),
+            "Reporte de evento seleccionado. Este flujo sera configurado en el siguiente paso.",
+        )
+        return TelegramWebhookRespuesta(
+            estado="REPORTE_EVENTO_INICIADO",
+            mensaje="Flujo de reporte de evento seleccionado.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -444,19 +669,39 @@ def recibir_webhook_telegram(
                 telegram_user_id=int(telegram_user_id),
                 nombres=nombres,
             )
+        if not contacto.telefono:
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                "Primero registre su numero institucional con /registrar.",
+            )
+            return TelegramWebhookRespuesta(
+                estado="TELEFONO_REQUERIDO",
+                mensaje="Se recibio ubicacion, pero el contacto no tiene telefono registrado.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+
         registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
         if registro is None:
-            registro = TelegramConsulta(
-                contacto_id=contacto.id,
-                usuario_id=contacto.usuario_id,
-                tipo_consulta=TIPO_BARRIDO,
-                consulta="Ubicacion recibida para barrido",
-                estado="PROCESANDO",
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                "Primero seleccione Reporte de barrido en el menu.",
             )
-            db.add(registro)
+            _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="FLUJO_REQUERIDO",
+                mensaje="Se recibio ubicacion, pero no hay reporte de barrido activo.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
 
         parametros = dict(registro.parametros or {})
         parametros["telefono"] = contacto.telefono
+        parametros["flujo"] = FLUJO_REPORTE_BARRIDO
         parametros["ubicacion_pendiente"] = {
             "latitud": float(location["latitude"]),
             "longitud": float(location["longitude"]),
@@ -481,7 +726,7 @@ def recibir_webhook_telegram(
             _responder_si_es_posible(
                 sender,
                 int(chat_id),
-                "Primero debe registrarse enviando su numero de telefono institucional.",
+                "Primero debe registrarse con /registrar.",
             )
             return TelegramWebhookRespuesta(
                 estado="CONTACTO_NO_REGISTRADO",
@@ -525,17 +770,43 @@ def recibir_webhook_telegram(
 
     telefono = _extraer_telefono_de_mensaje(message, texto)
     if telefono:
-        contacto = _upsert_contacto_telegram(
+        contacto = _contacto_por_chat_id(db, int(chat_id))
+        if contacto is None:
+            contacto = _upsert_contacto_telegram(
+                db=db,
+                chat_id=int(chat_id),
+                telegram_user_id=int(telegram_user_id),
+                nombres=nombres,
+            )
+
+        registro_telefono = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_REGISTRO_TELEFONO)
+        if registro_telefono is None:
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                "Para registrar su numero, primero escriba /registrar.",
+            )
+            return TelegramWebhookRespuesta(
+                estado="REGISTRO_REQUERIDO",
+                mensaje="Se recibio telefono, pero no hay registro de telefono pendiente.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+
+        estado, mensaje, contacto = _registrar_telefono_pendiente(
             db=db,
-            chat_id=int(chat_id),
+            contacto=contacto,
             telegram_user_id=int(telegram_user_id),
+            chat_id=int(chat_id),
             nombres=nombres,
             telefono=telefono,
         )
-        _solicitar_ubicacion_si_es_posible(sender, int(chat_id))
+        _responder_si_es_posible(sender, int(chat_id), mensaje)
+        _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
         return TelegramWebhookRespuesta(
-            estado="REGISTRADO",
-            mensaje="Telefono vinculado al chat_id. Se solicito la ubicacion.",
+            estado=estado,
+            mensaje=mensaje,
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -543,10 +814,10 @@ def recibir_webhook_telegram(
 
     contacto = _contacto_por_chat_id(db, int(chat_id))
     if contacto and contacto.telefono:
-        _solicitar_ubicacion_si_es_posible(sender, int(chat_id))
+        _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
         return TelegramWebhookRespuesta(
-            estado="UBICACION_REQUERIDA",
-            mensaje="Contacto registrado. Se solicito compartir ubicacion.",
+            estado="MENU_PRINCIPAL",
+            mensaje="Contacto registrado. Se mostro el menu principal.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -561,11 +832,11 @@ def recibir_webhook_telegram(
     _responder_si_es_posible(
         sender,
         int(chat_id),
-        "No pude reconocer el numero. Envie el telefono con codigo de pais. Ejemplo: +593987223658",
+        "No pude reconocer la opcion. Escriba hola para ver el menu o /registrar para registrar su numero.",
     )
     return TelegramWebhookRespuesta(
-        estado="TELEFONO_REQUERIDO",
-        mensaje="Mensaje recibido, pero no contiene un telefono valido.",
+        estado="OPCION_NO_RECONOCIDA",
+        mensaje="Mensaje recibido, pero no coincide con una opcion del bot.",
         contacto_id=contacto.id,
         telefono=contacto.telefono,
         chat_id=contacto.chat_id,
