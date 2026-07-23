@@ -69,6 +69,37 @@ class TelegramBarrido(Base):
     )
 
 
+class TelegramEvento(Base):
+    __tablename__ = "telegram_eventos"
+    __table_args__ = (
+        CheckConstraint("latitud >= -90 AND latitud <= 90", name="chk_telegram_eventos_latitud"),
+        CheckConstraint("longitud >= -180 AND longitud <= 180", name="chk_telegram_eventos_longitud"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    contacto_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_contactos.id", name="fk_telegram_eventos_contacto"),
+        nullable=False,
+    )
+    descripcion: Mapped[str] = mapped_column(Text, nullable=False)
+    latitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
+    longitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
+    fecha_reporte: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    fecha_creacion: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    foto_file_id: Mapped[str] = mapped_column(Text, nullable=False)
+    foto_file_unique_id: Mapped[str | None] = mapped_column(Text)
+
+
 class TelegramConsulta(Base):
     __tablename__ = "telegram_consultas"
     __table_args__ = (

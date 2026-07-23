@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CatalogoNivelEvento, TelegramBarrido, TelegramConsulta, TelegramContacto
+from app.models import CatalogoNivelEvento, TelegramBarrido, TelegramConsulta, TelegramContacto, TelegramEvento
 from app.schemas import (
     BarridoGuardadoRespuesta,
     CrearBoletinRequest,
@@ -29,8 +29,12 @@ TIPO_BOLETIN = "BOLETIN_DIARIO"
 TIPO_BARRIDO = "BARRIDO_GAD"
 TIPO_SEGUIMIENTO = "SEGUIMIENTO_EVENTO"
 TIPO_REGISTRO_TELEFONO = "REGISTRO_TELEFONO"
+TIPO_REPORTE_EVENTO = "REPORTE_EVENTO"
 FLUJO_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 FLUJO_REPORTE_EVENTO = "REPORTE_EVENTO"
+PASO_EVENTO_FOTO = "ESPERANDO_FOTO"
+PASO_EVENTO_DESCRIPCION = "ESPERANDO_DESCRIPCION"
+PASO_EVENTO_UBICACION = "ESPERANDO_UBICACION"
 PATRON_TELEFONO = re.compile(r"^\+?\d{8,15}$")
 PATRON_TELEFONO_EN_TEXTO = re.compile(r"\+?\d[\d\s().-]{6,}\d")
 OPCIONES_ENCUESTA_LLUVIA = ["Debil", "Moderado", "Fuerte", "Muy fuerte"]
@@ -45,6 +49,7 @@ MENSAJE_SELECCION_NIVEL_LLUVIA = (
     "1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte"
 )
 MENSAJE_SOLICITAR_UBICACION = "Hola. Comparta su ubicacion actual usando Telegram para registrar el barrido."
+MENSAJE_SOLICITAR_UBICACION_EVENTO = "Comparta la ubicacion del evento usando Telegram."
 MENSAJE_MENU_PRINCIPAL = "Bienvenido. Seleccione una opcion:"
 OPCION_REPORTE_BARRIDO = "Reporte de barrido"
 OPCION_REPORTE_EVENTO = "Reporte de evento"
@@ -299,6 +304,10 @@ def _consulta_activa_por_contacto_y_tipo(
     ).first()
 
 
+def _consulta_evento_activa_por_contacto(db: Session, contacto_id: int) -> TelegramConsulta | None:
+    return _consulta_activa_por_contacto_y_tipo(db, contacto_id, TIPO_REPORTE_EVENTO)
+
+
 def _teclado_menu_principal() -> dict[str, Any]:
     return {
         "inline_keyboard": [
@@ -339,6 +348,15 @@ def _solicitar_ubicacion_si_es_posible(sender: TelegramSender | None, chat_id: i
         sender,
         chat_id,
         MENSAJE_SOLICITAR_UBICACION,
+        reply_markup=_teclado_solicitar_ubicacion(),
+    )
+
+
+def _solicitar_ubicacion_evento_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(
+        sender,
+        chat_id,
+        MENSAJE_SOLICITAR_UBICACION_EVENTO,
         reply_markup=_teclado_solicitar_ubicacion(),
     )
 
@@ -468,6 +486,136 @@ def _iniciar_reporte_barrido(
     _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
 
 
+def _extraer_foto_de_mensaje(message: dict[str, Any]) -> dict[str, Any] | None:
+    fotos = message.get("photo")
+    if not isinstance(fotos, list) or not fotos:
+        return None
+    fotos_validas = [foto for foto in fotos if isinstance(foto, dict) and foto.get("file_id")]
+    if not fotos_validas:
+        return None
+    return max(
+        fotos_validas,
+        key=lambda foto: (
+            int(foto.get("file_size") or 0),
+            int(foto.get("width") or 0) * int(foto.get("height") or 0),
+        ),
+    )
+
+
+def _iniciar_reporte_evento(
+    db: Session,
+    contacto: TelegramContacto,
+    sender: TelegramSender | None,
+) -> None:
+    registro = _consulta_evento_activa_por_contacto(db, contacto.id)
+    if registro is None:
+        registro = TelegramConsulta(
+            contacto_id=contacto.id,
+            usuario_id=contacto.usuario_id,
+            tipo_consulta=TIPO_REPORTE_EVENTO,
+            consulta="Reporte de evento iniciado desde Telegram",
+            parametros={
+                "canal": "TELEGRAM",
+                "flujo": FLUJO_REPORTE_EVENTO,
+                "paso": PASO_EVENTO_FOTO,
+                "telefono": contacto.telefono,
+            },
+            estado="PROCESANDO",
+        )
+        db.add(registro)
+    else:
+        parametros = dict(registro.parametros or {})
+        parametros.update(
+            {
+                "canal": "TELEGRAM",
+                "flujo": FLUJO_REPORTE_EVENTO,
+                "paso": PASO_EVENTO_FOTO,
+                "telefono": contacto.telefono,
+            }
+        )
+        parametros.pop("foto", None)
+        parametros.pop("descripcion", None)
+        parametros.pop("ubicacion", None)
+        registro.parametros = parametros
+        registro.estado = "PROCESANDO"
+    db.commit()
+    _responder_si_es_posible(sender, contacto.chat_id, "Envie una foto del evento.")
+
+
+def _guardar_foto_evento(
+    db: Session,
+    registro: TelegramConsulta,
+    foto: dict[str, Any],
+) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["foto"] = {
+        "file_id": str(foto["file_id"]),
+        "file_unique_id": foto.get("file_unique_id"),
+    }
+    parametros["paso"] = PASO_EVENTO_DESCRIPCION
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_descripcion_evento(db: Session, registro: TelegramConsulta, descripcion: str) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["descripcion"] = descripcion
+    parametros["paso"] = PASO_EVENTO_UBICACION
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_reporte_evento(
+    db: Session,
+    contacto: TelegramContacto,
+    registro: TelegramConsulta,
+    latitud: float,
+    longitud: float,
+) -> tuple[TelegramConsulta, TelegramEvento]:
+    parametros = dict(registro.parametros or {})
+    foto = parametros.get("foto") or {}
+    descripcion = str(parametros.get("descripcion") or "").strip()
+    if not foto.get("file_id") or not descripcion:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El reporte de evento no tiene foto y descripcion completas.",
+        )
+
+    evento = TelegramEvento(
+        contacto_id=contacto.id,
+        descripcion=descripcion,
+        foto_file_id=str(foto["file_id"]),
+        foto_file_unique_id=foto.get("file_unique_id"),
+        latitud=Decimal(str(latitud)),
+        longitud=Decimal(str(longitud)),
+    )
+    db.add(evento)
+    parametros["ubicacion"] = {"latitud": latitud, "longitud": longitud}
+    parametros["paso"] = "COMPLETADO"
+    registro.parametros = parametros
+    registro.respuesta = {
+        "canal": "TELEGRAM",
+        "telefono": contacto.telefono,
+        "evento_id": None,
+        "descripcion": descripcion,
+        "foto_file_id": str(foto["file_id"]),
+        "foto_file_unique_id": foto.get("file_unique_id"),
+        "latitud": latitud,
+        "longitud": longitud,
+    }
+    registro.estado = "COMPLETADA"
+    registro.fecha_respuesta = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(registro)
+    db.refresh(evento)
+    registro.respuesta = dict(registro.respuesta or {}) | {"evento_id": evento.id}
+    db.commit()
+    db.refresh(registro)
+    return registro, evento
+
+
 def _seleccionar_reporte_barrido(
     db: Session,
     contacto: TelegramContacto,
@@ -498,17 +646,28 @@ def _seleccionar_reporte_barrido(
 
 
 def _seleccionar_reporte_evento(
+    db: Session,
     contacto: TelegramContacto,
     sender: TelegramSender | None,
 ) -> TelegramWebhookRespuesta:
-    _responder_si_es_posible(
-        sender,
-        contacto.chat_id,
-        "Reporte de evento seleccionado. Este flujo sera configurado en el siguiente paso.",
-    )
+    if not contacto.telefono:
+        _responder_si_es_posible(
+            sender,
+            contacto.chat_id,
+            "Primero registre su numero institucional con /registrar.",
+        )
+        return TelegramWebhookRespuesta(
+            estado="TELEFONO_REQUERIDO",
+            mensaje="El contacto debe registrar su telefono antes del reporte de evento.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    _iniciar_reporte_evento(db, contacto, sender)
     return TelegramWebhookRespuesta(
         estado="REPORTE_EVENTO_INICIADO",
-        mensaje="Flujo de reporte de evento seleccionado.",
+        mensaje="Se solicito la foto del evento.",
         contacto_id=contacto.id,
         telefono=contacto.telefono,
         chat_id=contacto.chat_id,
@@ -631,7 +790,7 @@ def _recibir_callback_menu_principal(
     if data == CALLBACK_REPORTE_BARRIDO:
         return _seleccionar_reporte_barrido(db, contacto, sender)
     if data == CALLBACK_REPORTE_EVENTO:
-        return _seleccionar_reporte_evento(contacto, sender)
+        return _seleccionar_reporte_evento(db, contacto, sender)
 
     _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
     return TelegramWebhookRespuesta(
@@ -727,7 +886,58 @@ def recibir_webhook_telegram(
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        return _seleccionar_reporte_evento(contacto, sender)
+        return _seleccionar_reporte_evento(db, contacto, sender)
+
+    foto = _extraer_foto_de_mensaje(message)
+    if foto:
+        contacto = _contacto_por_chat_id(db, int(chat_id))
+        if contacto is None:
+            contacto = _upsert_contacto_telegram(
+                db=db,
+                chat_id=int(chat_id),
+                telegram_user_id=int(telegram_user_id),
+                nombres=nombres,
+            )
+        if not contacto.telefono:
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                "Primero registre su numero institucional con /registrar.",
+            )
+            return TelegramWebhookRespuesta(
+                estado="TELEFONO_REQUERIDO",
+                mensaje="Se recibio foto, pero el contacto no tiene telefono registrado.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+
+        registro_evento = _consulta_evento_activa_por_contacto(db, contacto.id)
+        paso_evento = (registro_evento.parametros or {}).get("paso") if registro_evento else None
+        if registro_evento is None or paso_evento != PASO_EVENTO_FOTO:
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                "Primero seleccione Reporte de evento en el menu.",
+            )
+            _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="FLUJO_REQUERIDO",
+                mensaje="Se recibio foto, pero no hay reporte de evento esperando foto.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+
+        _guardar_foto_evento(db, registro_evento, foto)
+        _responder_si_es_posible(sender, int(chat_id), "Foto recibida. Describa brevemente el evento.")
+        return TelegramWebhookRespuesta(
+            estado="FOTO_EVENTO_RECIBIDA",
+            mensaje="Foto guardada temporalmente para el reporte de evento.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
 
     location = message.get("location")
     if isinstance(location, dict):
@@ -752,6 +962,47 @@ def recibir_webhook_telegram(
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
+
+        registro_evento = _consulta_evento_activa_por_contacto(db, contacto.id)
+        paso_evento = (registro_evento.parametros or {}).get("paso") if registro_evento else None
+        if registro_evento is not None:
+            if paso_evento == PASO_EVENTO_UBICACION:
+                registro_evento, evento = _guardar_reporte_evento(
+                    db=db,
+                    contacto=contacto,
+                    registro=registro_evento,
+                    latitud=float(location["latitude"]),
+                    longitud=float(location["longitude"]),
+                )
+                _responder_si_es_posible(sender, int(chat_id), "Reporte de evento guardado correctamente.")
+                _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+                return TelegramWebhookRespuesta(
+                    estado="REPORTE_EVENTO_GUARDADO",
+                    mensaje=f"Reporte de evento guardado con id {evento.id}.",
+                    contacto_id=contacto.id,
+                    telefono=contacto.telefono,
+                    chat_id=contacto.chat_id,
+                )
+
+            if paso_evento == PASO_EVENTO_FOTO:
+                _responder_si_es_posible(sender, int(chat_id), "Primero envie una foto del evento.")
+                return TelegramWebhookRespuesta(
+                    estado="FOTO_EVENTO_REQUERIDA",
+                    mensaje="Se recibio ubicacion, pero el reporte de evento espera una foto.",
+                    contacto_id=contacto.id,
+                    telefono=contacto.telefono,
+                    chat_id=contacto.chat_id,
+                )
+
+            if paso_evento == PASO_EVENTO_DESCRIPCION:
+                _responder_si_es_posible(sender, int(chat_id), "Primero describa brevemente el evento.")
+                return TelegramWebhookRespuesta(
+                    estado="DESCRIPCION_EVENTO_REQUERIDA",
+                    mensaje="Se recibio ubicacion, pero el reporte de evento espera descripcion.",
+                    contacto_id=contacto.id,
+                    telefono=contacto.telefono,
+                    chat_id=contacto.chat_id,
+                )
 
         registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
         if registro is None:
@@ -788,6 +1039,41 @@ def recibir_webhook_telegram(
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
         )
+
+    if texto:
+        contacto_evento = _contacto_por_chat_id(db, int(chat_id))
+        registro_evento = (
+            _consulta_evento_activa_por_contacto(db, contacto_evento.id) if contacto_evento is not None else None
+        )
+        paso_evento = (registro_evento.parametros or {}).get("paso") if registro_evento else None
+        if contacto_evento and registro_evento and paso_evento == PASO_EVENTO_FOTO:
+            _responder_si_es_posible(sender, int(chat_id), "Primero envie una foto del evento.")
+            return TelegramWebhookRespuesta(
+                estado="FOTO_EVENTO_REQUERIDA",
+                mensaje="El reporte de evento espera una foto.",
+                contacto_id=contacto_evento.id,
+                telefono=contacto_evento.telefono,
+                chat_id=contacto_evento.chat_id,
+            )
+        if contacto_evento and registro_evento and paso_evento == PASO_EVENTO_DESCRIPCION:
+            _guardar_descripcion_evento(db, registro_evento, texto)
+            _solicitar_ubicacion_evento_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="DESCRIPCION_EVENTO_RECIBIDA",
+                mensaje="Descripcion guardada temporalmente para el reporte de evento.",
+                contacto_id=contacto_evento.id,
+                telefono=contacto_evento.telefono,
+                chat_id=contacto_evento.chat_id,
+            )
+        if contacto_evento and registro_evento and paso_evento == PASO_EVENTO_UBICACION:
+            _solicitar_ubicacion_evento_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="UBICACION_EVENTO_REQUERIDA",
+                mensaje="El reporte de evento espera ubicacion.",
+                contacto_id=contacto_evento.id,
+                telefono=contacto_evento.telefono,
+                chat_id=contacto_evento.chat_id,
+            )
 
     nivel = MAPA_NIVELES_LLUVIAS.get(texto.strip())
     if nivel:

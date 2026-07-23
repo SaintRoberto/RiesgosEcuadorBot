@@ -54,6 +54,37 @@ def _asegurar_niveles(session: Session) -> None:
     assert total == 4
 
 
+def _asegurar_tabla_eventos(session: Session) -> None:
+    session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS public.telegram_eventos
+            (
+                id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                contacto_id bigint NOT NULL,
+                descripcion text NOT NULL,
+                latitud numeric(10,7) NOT NULL,
+                longitud numeric(10,7) NOT NULL,
+                fecha_reporte timestamp with time zone NOT NULL DEFAULT now(),
+                activo boolean NOT NULL DEFAULT true,
+                fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
+                foto_file_id text NOT NULL,
+                foto_file_unique_id text,
+                CONSTRAINT fk_telegram_eventos_contacto
+                    FOREIGN KEY (contacto_id)
+                    REFERENCES public.telegram_contactos (id)
+                    ON UPDATE NO ACTION
+                    ON DELETE NO ACTION,
+                CONSTRAINT chk_telegram_eventos_latitud
+                    CHECK (latitud >= -90 AND latitud <= 90),
+                CONSTRAINT chk_telegram_eventos_longitud
+                    CHECK (longitud >= -180 AND longitud <= 180)
+            )
+            """
+        )
+    )
+
+
 @contextmanager
 def _client_con_contacto() -> Generator[tuple[TestClient, str], None, None]:
     connection = engine.connect()
@@ -383,9 +414,22 @@ def test_webhook_reporte_evento_queda_seleccionado() -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593007{uuid4().int % 1000000:06d}"
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        )
+
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
@@ -410,6 +454,131 @@ def test_webhook_reporte_evento_queda_seleccionado() -> None:
 
         assert respuesta.status_code == 200
         assert respuesta.json()["estado"] == "REPORTE_EVENTO_INICIADO"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_guarda_reporte_evento_con_foto_descripcion_y_ubicacion() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593006{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_tabla_eventos(session)
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        seleccion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 50,
+                "callback_query": {
+                    "id": "callback-evento-full",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "REPORTE_EVENTO",
+                },
+            },
+        )
+        assert seleccion.status_code == 200
+        assert seleccion.json()["estado"] == "REPORTE_EVENTO_INICIADO"
+
+        foto = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 51,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "photo": [
+                        {
+                            "file_id": "foto-small",
+                            "file_unique_id": "foto-small-unique",
+                            "width": 320,
+                            "height": 240,
+                            "file_size": 1000,
+                        },
+                        {
+                            "file_id": "foto-large",
+                            "file_unique_id": "foto-large-unique",
+                            "width": 1280,
+                            "height": 960,
+                            "file_size": 5000,
+                        },
+                    ],
+                },
+            },
+        )
+        assert foto.status_code == 200
+        assert foto.json()["estado"] == "FOTO_EVENTO_RECIBIDA"
+
+        descripcion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 52,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "Deslizamiento junto a la via principal",
+                },
+            },
+        )
+        assert descripcion.status_code == 200
+        assert descripcion.json()["estado"] == "DESCRIPCION_EVENTO_RECIBIDA"
+
+        ubicacion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 53,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "location": {"latitude": -0.1806532, "longitude": -78.4678382},
+                },
+            },
+        )
+        assert ubicacion.status_code == 200
+        assert ubicacion.json()["estado"] == "REPORTE_EVENTO_GUARDADO"
+
+        row = session.execute(
+            text(
+                """
+                SELECT e.descripcion, e.foto_file_id, e.foto_file_unique_id, e.latitud, e.longitud
+                FROM telegram_eventos e
+                JOIN telegram_contactos c ON c.id = e.contacto_id
+                WHERE c.telefono = :telefono
+                """
+            ),
+            {"telefono": telefono},
+        ).mappings().one()
+        assert row["descripcion"] == "Deslizamiento junto a la via principal"
+        assert row["foto_file_id"] == "foto-large"
+        assert row["foto_file_unique_id"] == "foto-large-unique"
+        assert float(row["latitud"]) == -0.1806532
+        assert float(row["longitud"]) == -78.4678382
     finally:
         app.dependency_overrides.clear()
         session.close()
