@@ -561,12 +561,15 @@ def _guardar_foto_evento(
     db: Session,
     registro: TelegramConsulta,
     foto: dict[str, Any],
+    media_group_id: str | None = None,
 ) -> None:
     parametros = dict(registro.parametros or {})
     parametros["foto"] = {
         "file_id": str(foto["file_id"]),
         "file_unique_id": foto.get("file_unique_id"),
     }
+    if media_group_id:
+        parametros["media_group_id"] = media_group_id
     parametros["paso"] = PASO_EVENTO_DESCRIPCION
     registro.parametros = parametros
     registro.estado = "PROCESANDO"
@@ -905,6 +908,8 @@ def recibir_webhook_telegram(
 
     foto = _extraer_foto_de_mensaje(message)
     if foto:
+        media_group_id = message.get("media_group_id")
+        media_group_id_texto = str(media_group_id) if media_group_id else None
         contacto = _contacto_por_chat_id(db, int(chat_id))
         if contacto is None:
             contacto = _upsert_contacto_telegram(
@@ -929,6 +934,20 @@ def recibir_webhook_telegram(
 
         registro_evento = _consulta_evento_activa_por_contacto(db, contacto.id)
         paso_evento = (registro_evento.parametros or {}).get("paso") if registro_evento else None
+        parametros_evento = dict(registro_evento.parametros or {}) if registro_evento else {}
+        if (
+            registro_evento is not None
+            and media_group_id_texto
+            and parametros_evento.get("media_group_id") == media_group_id_texto
+            and paso_evento != PASO_EVENTO_FOTO
+        ):
+            return TelegramWebhookRespuesta(
+                estado="FOTO_EVENTO_IGNORADA",
+                mensaje="Foto adicional ignorada porque ya se guardo la primera imagen del album.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
         if registro_evento is None or paso_evento != PASO_EVENTO_FOTO:
             _responder_si_es_posible(
                 sender,
@@ -944,8 +963,14 @@ def recibir_webhook_telegram(
                 chat_id=contacto.chat_id,
             )
 
-        _guardar_foto_evento(db, registro_evento, foto)
-        _responder_si_es_posible(sender, int(chat_id), "Foto recibida. Describa brevemente el evento.")
+        _guardar_foto_evento(db, registro_evento, foto, media_group_id_texto)
+        mensaje_foto = "Foto recibida. Describa brevemente el evento."
+        if media_group_id_texto:
+            mensaje_foto = (
+                "Foto recibida. Si envio varias imagenes, solo se usara la primera. "
+                "Describa brevemente el evento."
+            )
+        _responder_si_es_posible(sender, int(chat_id), mensaje_foto)
         return TelegramWebhookRespuesta(
             estado="FOTO_EVENTO_RECIBIDA",
             mensaje="Foto guardada temporalmente para el reporte de evento.",

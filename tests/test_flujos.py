@@ -716,6 +716,116 @@ def test_endpoint_lista_fotos_eventos() -> None:
         connection.close()
 
 
+def test_webhook_evento_con_album_usa_solo_primera_foto() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593010{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        seleccion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 60,
+                "callback_query": {
+                    "id": "callback-evento-album",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "REPORTE_EVENTO",
+                },
+            },
+        )
+        assert seleccion.status_code == 200
+
+        primera = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 61,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "media_group_id": "album-1",
+                    "photo": [
+                        {
+                            "file_id": "primera-foto",
+                            "file_unique_id": "primera-foto-unique",
+                            "width": 1280,
+                            "height": 960,
+                            "file_size": 5000,
+                        },
+                    ],
+                },
+            },
+        )
+        assert primera.status_code == 200
+        assert primera.json()["estado"] == "FOTO_EVENTO_RECIBIDA"
+
+        segunda = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 62,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "media_group_id": "album-1",
+                    "photo": [
+                        {
+                            "file_id": "segunda-foto",
+                            "file_unique_id": "segunda-foto-unique",
+                            "width": 1280,
+                            "height": 960,
+                            "file_size": 5000,
+                        },
+                    ],
+                },
+            },
+        )
+        assert segunda.status_code == 200
+        assert segunda.json()["estado"] == "FOTO_EVENTO_IGNORADA"
+
+        parametros = session.execute(
+            text(
+                """
+                SELECT tc.parametros
+                FROM telegram_consultas tc
+                JOIN telegram_contactos c ON c.id = tc.contacto_id
+                WHERE c.telefono = :telefono
+                  AND tc.tipo_consulta = 'REPORTE_EVENTO'
+                """
+            ),
+            {"telefono": telefono},
+        ).scalar_one()
+        assert parametros["foto"]["file_id"] == "primera-foto"
+        assert parametros["media_group_id"] == "album-1"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
 def test_webhook_no_permite_registrar_telefono_de_otra_cuenta() -> None:
     connection = engine.connect()
     transaction = connection.begin()
