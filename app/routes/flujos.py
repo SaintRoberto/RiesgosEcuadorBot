@@ -975,7 +975,6 @@ def recibir_webhook_telegram(
                     longitud=float(location["longitude"]),
                 )
                 _responder_si_es_posible(sender, int(chat_id), "Reporte de evento guardado correctamente.")
-                _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
                 return TelegramWebhookRespuesta(
                     estado="REPORTE_EVENTO_GUARDADO",
                     mensaje=f"Reporte de evento guardado con id {evento.id}.",
