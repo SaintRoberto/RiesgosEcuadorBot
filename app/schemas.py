@@ -1,0 +1,107 @@
+from datetime import date
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+
+class HealthRespuesta(BaseModel):
+    estado: str
+    base_datos: str
+
+
+class NivelLluvia(StrEnum):
+    debil = "DEBIL"
+    moderado = "MODERADO"
+    fuerte = "FUERTE"
+    muy_fuerte = "MUY_FUERTE"
+
+
+MAPA_NIVELES_LLUVIAS = {
+    "1": NivelLluvia.debil,
+    "2": NivelLluvia.moderado,
+    "3": NivelLluvia.fuerte,
+    "4": NivelLluvia.muy_fuerte,
+}
+
+
+class CrearBoletinRequest(BaseModel):
+    telefonos: list[str] = Field(..., min_length=1, examples=[["+593987223658"]])
+    url_boletin: HttpUrl
+    titulo: str | None = Field(default=None, max_length=250)
+    fecha_boletin: date | None = None
+    codigo: str | None = Field(default=None, max_length=150)
+    usuario_id: int | None = None
+
+
+class SolicitarBarridoRequest(BaseModel):
+    telefonos: list[str] = Field(..., min_length=1, examples=[["+593987223658"]])
+    fecha_barrido: date | None = None
+    codigo: str | None = Field(default=None, max_length=150)
+    mensaje: str | None = Field(default=None, max_length=500)
+    usuario_id: int | None = None
+
+
+class RegistrarBarridoRequest(BaseModel):
+    telefono: str = Field(..., examples=["+593987223658"])
+    nivel_lluvia: NivelLluvia = Field(..., examples=["2"])
+    latitud: float = Field(..., ge=-90, le=90, examples=[-0.1806532])
+    longitud: float = Field(..., ge=-180, le=180, examples=[-78.4678382])
+    codigo: str | None = Field(default=None, max_length=150)
+    observacion: str | None = None
+    usuario_id: int | None = None
+
+    @field_validator("nivel_lluvia", mode="before")
+    @classmethod
+    def normalizar_nivel_lluvia(cls, value: Any) -> Any:
+        if isinstance(value, int):
+            return MAPA_NIVELES_LLUVIAS.get(str(value), value)
+        if isinstance(value, str):
+            texto = value.strip().upper()
+            return MAPA_NIVELES_LLUVIAS.get(texto, texto)
+        return value
+
+
+class CrearSeguimientoEventoRequest(BaseModel):
+    telefonos: list[str] = Field(..., min_length=1, examples=[["+593987223658"]])
+    evento_codigo: str = Field(..., max_length=150)
+    descripcion: str = Field(..., min_length=1)
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+    enviar_correo: bool = True
+    mensaje: str | None = Field(default=None, max_length=1000)
+    usuario_id: int | None = None
+
+
+class RegistroFlujoRespuesta(BaseModel):
+    id: int
+    telefono: str | None
+    tipo_consulta: str
+    codigo: str | None
+    estado: str
+
+
+class EnvioFlujoRespuesta(BaseModel):
+    codigo: str
+    total: int
+    registros: list[RegistroFlujoRespuesta]
+
+
+class BarridoGuardadoRespuesta(BaseModel):
+    id: int
+    barrido_id: int
+    telefono: str | None
+    codigo: str | None
+    estado: str
+    nivel_lluvia: NivelLluvia
+    nivel_id: int
+    latitud: float
+    longitud: float
+
+
+class TelegramWebhookRespuesta(BaseModel):
+    estado: str
+    mensaje: str
+    contacto_id: int | None = None
+    telefono: str | None = None
+    chat_id: int | None = None
