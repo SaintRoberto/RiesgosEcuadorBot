@@ -475,30 +475,48 @@ def _iniciar_reporte_barrido(
     db: Session,
     contacto: TelegramContacto,
     sender: TelegramSender | None,
+    codigo: str | None = None,
+    mensaje: str | None = None,
+    fecha_barrido: date | None = None,
+    usuario_id: int | None = None,
 ) -> None:
     registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
     if registro is None:
         registro = TelegramConsulta(
             contacto_id=contacto.id,
-            usuario_id=contacto.usuario_id,
+            usuario_id=usuario_id or contacto.usuario_id,
             tipo_consulta=TIPO_BARRIDO,
-            consulta="Reporte de barrido iniciado desde Telegram",
+            codigo=codigo,
+            consulta=mensaje or "Reporte de barrido iniciado desde Telegram",
             parametros={
                 "canal": "TELEGRAM",
                 "flujo": FLUJO_REPORTE_BARRIDO,
                 "telefono": contacto.telefono,
+                "fecha_barrido": fecha_barrido.isoformat() if fecha_barrido else None,
             },
             estado="PROCESANDO",
         )
         db.add(registro)
     else:
+        registro.usuario_id = usuario_id or registro.usuario_id or contacto.usuario_id
+        registro.codigo = codigo or registro.codigo
+        registro.consulta = mensaje or registro.consulta or "Reporte de barrido iniciado desde Telegram"
         parametros = dict(registro.parametros or {})
         parametros["flujo"] = FLUJO_REPORTE_BARRIDO
         parametros["telefono"] = contacto.telefono
+        parametros["fecha_barrido"] = fecha_barrido.isoformat() if fecha_barrido else parametros.get("fecha_barrido")
         registro.parametros = parametros
         registro.estado = "PROCESANDO"
     db.commit()
-    _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
+    if mensaje:
+        _responder_si_es_posible(
+            sender,
+            contacto.chat_id,
+            mensaje,
+            reply_markup=_teclado_solicitar_ubicacion(),
+        )
+    else:
+        _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
 
 
 def _extraer_foto_de_mensaje(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -1294,26 +1312,25 @@ def solicitar_barrido(
     contactos = _contactos_activos_por_telefono(db, payload.telefonos)
     fecha_barrido = payload.fecha_barrido or date.today()
     codigo = _codigo("BARRIDO", payload.codigo, fecha_barrido)
-    mensaje = payload.mensaje or "Indique el nivel de lluvia: DEBIL, MODERADO, FUERTE o MUY_FUERTE."
+    mensaje = payload.mensaje or MENSAJE_SOLICITAR_UBICACION
     registros = []
     for contacto in contactos:
-        registro = TelegramConsulta(
-            contacto_id=contacto.id,
-            usuario_id=payload.usuario_id or contacto.usuario_id,
-            tipo_consulta=TIPO_BARRIDO,
+        _iniciar_reporte_barrido(
+            db=db,
+            contacto=contacto,
+            sender=sender,
             codigo=codigo,
-            consulta=mensaje,
-            parametros={
-                "canal": "TELEGRAM",
-                "telefono": contacto.telefono,
-                "fecha_barrido": fecha_barrido.isoformat(),
-                "opciones": [nivel.value for nivel in NivelLluvia],
-            },
+            mensaje=mensaje,
+            fecha_barrido=fecha_barrido,
+            usuario_id=payload.usuario_id,
         )
-        _marcar_envio(registro, sender, contacto.chat_id, mensaje)
+        registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
+        if registro is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No se pudo crear la solicitud de barrido.",
+            )
         registros.append(registro)
-    db.add_all(registros)
-    db.commit()
     for registro in registros:
         db.refresh(registro)
     return _respuesta_envio(codigo, registros)

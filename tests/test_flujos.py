@@ -162,7 +162,7 @@ def test_flujo_boletin_barrido_y_seguimiento() -> None:
             json={"telefonos": [telefono], "codigo": "BARRIDO-TEST"},
         )
         assert solicitud.status_code == 201
-        assert solicitud.json()["registros"][0]["estado"] == "COMPLETADA"
+        assert solicitud.json()["registros"][0]["estado"] == "PROCESANDO"
 
         respuesta = client.post(
             "/api/telegram/barridos/respuestas",
