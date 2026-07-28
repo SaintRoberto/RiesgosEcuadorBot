@@ -83,6 +83,7 @@ SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
 SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su ubicacion y nivel de lluvia."
 SCRIPT_ADMIN_TELEGRAM_USER_IDS = {6869758976}
 SCRIPT_PASSCODE = "Sngre.2026"
+SCRIPT_MAX_PASSCODE_INTENTOS = 3
 MEDIA_TYPE_POR_EXTENSION = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -525,11 +526,14 @@ def _iniciar_auth_scripts(db: Session, contacto: TelegramContacto, sender: Teleg
             usuario_id=contacto.usuario_id,
             tipo_consulta=TIPO_SCRIPT_AUTH,
             consulta="Autenticacion para ejecutar scripts",
-            parametros={"flujo": TIPO_SCRIPT_AUTH},
+            parametros={"flujo": TIPO_SCRIPT_AUTH, "intentos": 0},
             estado="PROCESANDO",
         )
         db.add(registro)
     else:
+        parametros = dict(registro.parametros or {})
+        parametros["intentos"] = 0
+        registro.parametros = parametros
         registro.estado = "PROCESANDO"
     db.commit()
     _responder_si_es_posible(sender, contacto.chat_id, "Ingrese el passcode para ejecutar scripts.")
@@ -546,7 +550,37 @@ def _validar_passcode_scripts(
         return None
 
     if texto.strip() != SCRIPT_PASSCODE:
-        _responder_si_es_posible(sender, contacto.chat_id, "Passcode incorrecto. Intente nuevamente.")
+        parametros = dict(registro.parametros or {})
+        intentos = int(parametros.get("intentos") or 0) + 1
+        parametros["intentos"] = intentos
+        registro.parametros = parametros
+
+        if intentos >= SCRIPT_MAX_PASSCODE_INTENTOS:
+            registro.estado = "COMPLETADA"
+            registro.fecha_respuesta = datetime.now(timezone.utc)
+            registro.respuesta = {"autenticado": False, "intentos": intentos}
+            db.commit()
+            _responder_si_es_posible(
+                sender,
+                contacto.chat_id,
+                "Passcode incorrecto. Se alcanzo el maximo de intentos. Escriba /scripts para intentar nuevamente.",
+            )
+            _mostrar_menu_principal_si_es_posible(sender, contacto.chat_id)
+            return TelegramWebhookRespuesta(
+                estado="PASSCODE_SCRIPT_BLOQUEADO",
+                mensaje="Se alcanzo el maximo de intentos de passcode.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+
+        db.commit()
+        restantes = SCRIPT_MAX_PASSCODE_INTENTOS - intentos
+        _responder_si_es_posible(
+            sender,
+            contacto.chat_id,
+            f"Passcode incorrecto. Intente nuevamente. Intentos restantes: {restantes}.",
+        )
         return TelegramWebhookRespuesta(
             estado="PASSCODE_SCRIPT_INVALIDO",
             mensaje="Passcode incorrecto.",

@@ -594,6 +594,88 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         connection.close()
 
 
+def test_webhook_scripts_bloquea_passcode_tras_tres_intentos() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    chat_id_admin = -(uuid4().int % 1000000000)
+    admins_originales = flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS
+
+    try:
+        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        menu = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 90,
+                "message": {
+                    "from": {"id": chat_id_admin, "first_name": "Admin"},
+                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    "text": "/scripts",
+                },
+            },
+        )
+        assert menu.status_code == 200
+        assert menu.json()["estado"] == "ESPERANDO_PASSCODE_SCRIPT"
+
+        for update_id in [91, 92]:
+            respuesta = client.post(
+                "/api/telegram/webhook",
+                json={
+                    "update_id": update_id,
+                    "message": {
+                        "from": {"id": chat_id_admin, "first_name": "Admin"},
+                        "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                        "text": "incorrecto",
+                    },
+                },
+            )
+            assert respuesta.status_code == 200
+            assert respuesta.json()["estado"] == "PASSCODE_SCRIPT_INVALIDO"
+
+        bloqueo = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 93,
+                "message": {
+                    "from": {"id": chat_id_admin, "first_name": "Admin"},
+                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    "text": "incorrecto",
+                },
+            },
+        )
+        assert bloqueo.status_code == 200
+        assert bloqueo.json()["estado"] == "PASSCODE_SCRIPT_BLOQUEADO"
+
+        pendientes = session.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM telegram_consultas tc
+                JOIN telegram_contactos c ON c.id = tc.contacto_id
+                WHERE c.telegram_user_id = :telegram_user_id
+                  AND tc.tipo_consulta = 'SCRIPT_AUTH'
+                  AND tc.estado = 'PROCESANDO'
+                """
+            ),
+            {"telegram_user_id": chat_id_admin},
+        ).scalar_one()
+        assert pendientes == 0
+    finally:
+        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
 def test_webhook_reporte_evento_queda_seleccionado() -> None:
     connection = engine.connect()
     transaction = connection.begin()
