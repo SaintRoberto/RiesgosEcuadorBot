@@ -1,7 +1,9 @@
+import json
 import re
 from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
@@ -13,6 +15,8 @@ from app.schemas import (
     BarridoGuardadoRespuesta,
     CrearBoletinRequest,
     CrearSeguimientoEventoRequest,
+    EnviarReporteLluviaGraficoRequest,
+    EnviarReporteLluviaGraficoRespuesta,
     EnvioFlujoRespuesta,
     FotoEventoRespuesta,
     MAPA_NIVELES_LLUVIAS,
@@ -92,6 +96,7 @@ SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su u
 SCRIPT_ADMIN_TELEGRAM_USER_IDS = {6869758976}
 SCRIPT_PASSCODE = "Sngre.2026"
 SCRIPT_MAX_PASSCODE_INTENTOS = 3
+QUICKCHART_URL = "https://quickchart.io/chart"
 MEDIA_TYPE_POR_EXTENSION = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -736,6 +741,62 @@ def _formatear_reporte_lluvia(reporte: ReporteLluviaRespuesta) -> str:
     for nivel in reporte.niveles:
         lineas.append(f"- {nivel.etiqueta}: {nivel.cantidad}")
     return "\n".join(lineas)
+
+
+def _crear_url_grafico_reporte_lluvia(
+    reporte: ReporteLluviaRespuesta,
+    titulo: str | None = None,
+) -> str:
+    chart_config = {
+        "type": "bar",
+        "data": {
+            "labels": [nivel.etiqueta for nivel in reporte.niveles],
+            "datasets": [
+                {
+                    "label": "Cantidad",
+                    "data": [nivel.cantidad for nivel in reporte.niveles],
+                    "backgroundColor": ["#7dd3fc", "#38bdf8", "#fb923c", "#ef4444"],
+                    "borderColor": ["#0284c7", "#0369a1", "#ea580c", "#b91c1c"],
+                    "borderWidth": 1,
+                }
+            ],
+        },
+        "options": {
+            "title": {
+                "display": True,
+                "text": titulo or "Reporte de barridos de lluvia",
+                "fontSize": 18,
+            },
+            "legend": {"display": False},
+            "plugins": {
+                "datalabels": {
+                    "anchor": "end",
+                    "align": "top",
+                    "color": "#111827",
+                    "font": {"weight": "bold"},
+                }
+            },
+            "scales": {
+                "yAxes": [
+                    {
+                        "ticks": {
+                            "beginAtZero": True,
+                            "precision": 0,
+                        }
+                    }
+                ]
+            },
+        },
+    }
+    query = urlencode(
+        {
+            "width": 900,
+            "height": 520,
+            "format": "png",
+            "c": json.dumps(chart_config, separators=(",", ":")),
+        }
+    )
+    return f"{QUICKCHART_URL}?{query}"
 
 
 def _extraer_foto_de_mensaje(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -1738,6 +1799,40 @@ def obtener_reporte_lluvia(
     db: Session = Depends(get_db),
 ) -> ReporteLluviaRespuesta:
     return _obtener_reporte_lluvia(db)
+
+
+@router.post(
+    "/barridos/reporte-lluvia/grafico/enviar",
+    response_model=EnviarReporteLluviaGraficoRespuesta,
+    tags=["barridos"],
+    summary="Enviar grafico de reporte de lluvia por Telegram",
+)
+def enviar_grafico_reporte_lluvia(
+    payload: EnviarReporteLluviaGraficoRequest,
+    db: Session = Depends(get_db),
+    sender: TelegramSender = Depends(get_telegram_sender),
+) -> EnviarReporteLluviaGraficoRespuesta:
+    chat_id = payload.chat_id or next(iter(SCRIPT_ADMIN_TELEGRAM_USER_IDS))
+    reporte = _obtener_reporte_lluvia(db)
+    chart_url = _crear_url_grafico_reporte_lluvia(reporte, payload.titulo)
+    caption = f"Reporte de barridos de lluvia. Total: {reporte.total}"
+    try:
+        telegram_response = sender.send_photo(
+            chat_id=chat_id,
+            photo=chart_url,
+            caption=caption,
+        )
+    except TelegramDeliveryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo enviar el grafico por Telegram.",
+        ) from exc
+
+    return EnviarReporteLluviaGraficoRespuesta(
+        chat_id=chat_id,
+        chart_url=chart_url,
+        telegram=telegram_response,
+    )
 
 
 @router.get(

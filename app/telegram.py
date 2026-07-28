@@ -22,6 +22,9 @@ class TelegramSender(Protocol):
     def answer_callback_query(self, callback_query_id: str) -> dict[str, Any]:
         pass
 
+    def send_photo(self, chat_id: int, photo: str, caption: str | None = None) -> dict[str, Any]:
+        pass
+
     def get_file(self, file_id: str) -> dict[str, Any]:
         pass
 
@@ -88,6 +91,12 @@ class TelegramBotSender:
 
     def answer_callback_query(self, callback_query_id: str) -> dict[str, Any]:
         return self._post("answerCallbackQuery", {"callback_query_id": callback_query_id})
+
+    def send_photo(self, chat_id: int, photo: str, caption: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"chat_id": chat_id, "photo": photo}
+        if caption is not None:
+            payload["caption"] = caption
+        return self._post("sendPhoto", payload)
 
     def get_file(self, file_id: str) -> dict[str, Any]:
         return self._post("getFile", {"file_id": file_id})

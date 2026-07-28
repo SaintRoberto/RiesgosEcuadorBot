@@ -40,6 +40,9 @@ class FakeTelegramSender:
     def answer_callback_query(self, callback_query_id: str) -> dict[str, object]:
         return {"ok": True, "result": True, "callback_query_id": callback_query_id}
 
+    def send_photo(self, chat_id: int, photo: str, caption: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {"chat_id": chat_id, "photo": photo, "caption": caption}}
+
     def get_file(self, file_id: str) -> dict[str, object]:
         return {"ok": True, "result": {"file_id": file_id, "file_path": "photos/evento-test.jpg"}}
 
@@ -140,6 +143,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
     assert "/api/telegram/barridos/reporte-lluvia" in paths
+    assert "/api/telegram/barridos/reporte-lluvia/grafico/enviar" in paths
     assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
     assert "/api/telegram/eventos/seguimientos" in paths
@@ -838,6 +842,76 @@ def test_endpoint_reporte_lluvia_devuelve_json_agrupado_por_intensidad() -> None
             "FUERTE": 0,
             "MUY_FUERTE": 1,
         }
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_endpoint_envia_grafico_reporte_lluvia_por_telegram() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593015{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_niveles(session)
+        session.execute(text("DELETE FROM telegram_barridos"))
+        contacto_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                RETURNING id
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        ).scalar_one()
+        nivel_id = session.execute(
+            text(
+                """
+                SELECT id
+                FROM catalogo_niveles_evento
+                WHERE nombre = 'FUERTE'
+                LIMIT 1
+                """
+            )
+        ).scalar_one()
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_barridos
+                    (contacto_id, nivel_id, latitud, longitud)
+                VALUES
+                    (:contacto_id, :nivel_id, -0.1806532, -78.4678382)
+                """
+            ),
+            {"contacto_id": contacto_id, "nivel_id": nivel_id},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/barridos/reporte-lluvia/grafico/enviar",
+            json={"chat_id": chat_id, "titulo": "Reporte lluvia test"},
+        )
+
+        assert respuesta.status_code == 200
+        data = respuesta.json()
+        assert data["chat_id"] == chat_id
+        assert data["chart_url"].startswith("https://quickchart.io/chart?")
+        assert "Reporte+lluvia+test" in data["chart_url"]
+        assert data["telegram"]["result"]["photo"] == data["chart_url"]
+        assert data["telegram"]["result"]["caption"] == "Reporte de barridos de lluvia. Total: 1"
     finally:
         app.dependency_overrides.clear()
         session.close()

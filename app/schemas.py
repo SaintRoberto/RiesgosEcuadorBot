@@ -110,6 +110,20 @@ class ReporteLluviaRespuesta(BaseModel):
     niveles: list[NivelLluviaResumenRespuesta]
 
 
+class EnviarReporteLluviaGraficoRequest(BaseModel):
+    chat_id: int | None = Field(
+        default=None,
+        description="Chat de Telegram destino. Si se omite, se usa el admin configurado.",
+    )
+    titulo: str | None = Field(default=None, max_length=120)
+
+
+class EnviarReporteLluviaGraficoRespuesta(BaseModel):
+    chat_id: int
+    chart_url: str
+    telegram: dict[str, Any]
+
+
 class TelegramWebhookRespuesta(BaseModel):
     estado: str
     mensaje: str
