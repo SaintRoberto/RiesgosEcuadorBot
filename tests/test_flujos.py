@@ -686,11 +686,9 @@ def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
     telefono = f"+593013{uuid4().int % 1000000:06d}"
-    chat_id_admin = -(uuid4().int % 1000000000)
-    admins_originales = flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS
+    chat_id = -(uuid4().int % 1000000000)
 
     try:
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
         _asegurar_niveles(session)
         session.execute(text("DELETE FROM telegram_barridos"))
         contacto_id = session.execute(
@@ -703,7 +701,7 @@ def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
                 RETURNING id
                 """
             ),
-            {"telegram_user_id": chat_id_admin, "chat_id": chat_id_admin, "telefono": telefono},
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
         ).scalar_one()
         niveles = {
             row["nombre"]: row["id"]
@@ -749,8 +747,8 @@ def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
             json={
                 "update_id": 100,
                 "message": {
-                    "from": {"id": chat_id_admin, "first_name": "Admin"},
-                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
                     "text": "/reporte_lluvia",
                 },
             },
@@ -765,7 +763,6 @@ def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
         assert "- Fuerte: 2" in data["mensaje"]
         assert "- Muy fuerte: 1" in data["mensaje"]
     finally:
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()
@@ -924,11 +921,9 @@ def test_webhook_reporte_lluvia_grafico_envia_foto() -> None:
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
     telefono = f"+593016{uuid4().int % 1000000:06d}"
-    chat_id_admin = -(uuid4().int % 1000000000)
-    admins_originales = flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS
+    chat_id = -(uuid4().int % 1000000000)
 
     try:
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
         _asegurar_niveles(session)
         session.execute(text("DELETE FROM telegram_barridos"))
         contacto_id = session.execute(
@@ -941,7 +936,7 @@ def test_webhook_reporte_lluvia_grafico_envia_foto() -> None:
                 RETURNING id
                 """
             ),
-            {"telegram_user_id": chat_id_admin, "chat_id": chat_id_admin, "telefono": telefono},
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
         ).scalar_one()
         nivel_id = session.execute(
             text(
@@ -977,8 +972,8 @@ def test_webhook_reporte_lluvia_grafico_envia_foto() -> None:
             json={
                 "update_id": 110,
                 "message": {
-                    "from": {"id": chat_id_admin, "first_name": "Admin"},
-                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
                     "text": "/reporte_lluvia_grafico",
                 },
             },
@@ -989,7 +984,6 @@ def test_webhook_reporte_lluvia_grafico_envia_foto() -> None:
         assert data["estado"] == "REPORTE_LLUVIA_GRAFICO_ENVIADO"
         assert data["mensaje"].startswith("https://quickchart.io/chart?")
     finally:
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()

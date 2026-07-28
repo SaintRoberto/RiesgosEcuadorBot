@@ -1255,15 +1255,6 @@ def recibir_webhook_telegram(
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        if not _puede_ejecutar_scripts(int(telegram_user_id)):
-            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ver este reporte.")
-            return TelegramWebhookRespuesta(
-                estado="REPORTE_LLUVIA_NO_AUTORIZADO",
-                mensaje="El usuario no tiene permisos para ver el reporte de lluvia.",
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
-            )
         reporte = _obtener_reporte_lluvia(db)
         texto_reporte = _formatear_reporte_lluvia(reporte)
         _responder_si_es_posible(sender, int(chat_id), texto_reporte)
@@ -1288,15 +1279,6 @@ def recibir_webhook_telegram(
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        if not _puede_ejecutar_scripts(int(telegram_user_id)):
-            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ver este reporte.")
-            return TelegramWebhookRespuesta(
-                estado="REPORTE_LLUVIA_NO_AUTORIZADO",
-                mensaje="El usuario no tiene permisos para ver el reporte de lluvia.",
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
-            )
         if sender is None:
             return TelegramWebhookRespuesta(
                 estado="TELEGRAM_NO_CONFIGURADO",
