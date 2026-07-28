@@ -529,7 +529,12 @@ def _es_comando_scripts(texto: str) -> bool:
 
 def _es_comando_reporte_lluvia(texto: str) -> bool:
     normalizado = _texto_normalizado(texto)
-    return normalizado.startswith("/reporte_lluvia") or normalizado == "reporte lluvia"
+    return normalizado in {"/reporte_lluvia", "reporte lluvia"}
+
+
+def _es_comando_reporte_lluvia_grafico(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado in {"/reporte_lluvia_grafico", "reporte lluvia grafico"}
 
 
 def _puede_ejecutar_scripts(telegram_user_id: int) -> bool:
@@ -797,6 +802,34 @@ def _crear_url_grafico_reporte_lluvia(
         }
     )
     return f"{QUICKCHART_URL}?{query}"
+
+
+def _enviar_grafico_reporte_lluvia(
+    db: Session,
+    sender: TelegramSender,
+    chat_id: int,
+    titulo: str | None = None,
+) -> EnviarReporteLluviaGraficoRespuesta:
+    reporte = _obtener_reporte_lluvia(db)
+    chart_url = _crear_url_grafico_reporte_lluvia(reporte, titulo)
+    caption = f"Reporte de barridos de lluvia. Total: {reporte.total}"
+    try:
+        telegram_response = sender.send_photo(
+            chat_id=chat_id,
+            photo=chart_url,
+            caption=caption,
+        )
+    except TelegramDeliveryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo enviar el grafico por Telegram.",
+        ) from exc
+
+    return EnviarReporteLluviaGraficoRespuesta(
+        chat_id=chat_id,
+        chart_url=chart_url,
+        telegram=telegram_response,
+    )
 
 
 def _extraer_foto_de_mensaje(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -1247,6 +1280,44 @@ def recibir_webhook_telegram(
         respuesta_auth = _validar_passcode_scripts(db, contacto_auth_scripts, texto, sender)
         if respuesta_auth is not None:
             return respuesta_auth
+
+    if _es_comando_reporte_lluvia_grafico(texto):
+        contacto = _upsert_contacto_telegram(
+            db=db,
+            chat_id=int(chat_id),
+            telegram_user_id=int(telegram_user_id),
+            nombres=nombres,
+        )
+        if not _puede_ejecutar_scripts(int(telegram_user_id)):
+            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ver este reporte.")
+            return TelegramWebhookRespuesta(
+                estado="REPORTE_LLUVIA_NO_AUTORIZADO",
+                mensaje="El usuario no tiene permisos para ver el reporte de lluvia.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        if sender is None:
+            return TelegramWebhookRespuesta(
+                estado="TELEGRAM_NO_CONFIGURADO",
+                mensaje="TELEGRAM_BOT_TOKEN no esta configurado.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        resultado = _enviar_grafico_reporte_lluvia(
+            db=db,
+            sender=sender,
+            chat_id=int(chat_id),
+            titulo="Reporte de barridos de lluvia",
+        )
+        return TelegramWebhookRespuesta(
+            estado="REPORTE_LLUVIA_GRAFICO_ENVIADO",
+            mensaje=resultado.chart_url,
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
 
     if _es_inicio_o_menu(texto):
         contacto = _upsert_contacto_telegram(
@@ -1813,25 +1884,11 @@ def enviar_grafico_reporte_lluvia(
     sender: TelegramSender = Depends(get_telegram_sender),
 ) -> EnviarReporteLluviaGraficoRespuesta:
     chat_id = payload.chat_id or next(iter(SCRIPT_ADMIN_TELEGRAM_USER_IDS))
-    reporte = _obtener_reporte_lluvia(db)
-    chart_url = _crear_url_grafico_reporte_lluvia(reporte, payload.titulo)
-    caption = f"Reporte de barridos de lluvia. Total: {reporte.total}"
-    try:
-        telegram_response = sender.send_photo(
-            chat_id=chat_id,
-            photo=chart_url,
-            caption=caption,
-        )
-    except TelegramDeliveryError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No se pudo enviar el grafico por Telegram.",
-        ) from exc
-
-    return EnviarReporteLluviaGraficoRespuesta(
+    return _enviar_grafico_reporte_lluvia(
+        db=db,
+        sender=sender,
         chat_id=chat_id,
-        chart_url=chart_url,
-        telegram=telegram_response,
+        titulo=payload.titulo,
     )
 
 

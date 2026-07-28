@@ -919,6 +919,83 @@ def test_endpoint_envia_grafico_reporte_lluvia_por_telegram() -> None:
         connection.close()
 
 
+def test_webhook_reporte_lluvia_grafico_envia_foto() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593016{uuid4().int % 1000000:06d}"
+    chat_id_admin = -(uuid4().int % 1000000000)
+    admins_originales = flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS
+
+    try:
+        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
+        _asegurar_niveles(session)
+        session.execute(text("DELETE FROM telegram_barridos"))
+        contacto_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                RETURNING id
+                """
+            ),
+            {"telegram_user_id": chat_id_admin, "chat_id": chat_id_admin, "telefono": telefono},
+        ).scalar_one()
+        nivel_id = session.execute(
+            text(
+                """
+                SELECT id
+                FROM catalogo_niveles_evento
+                WHERE nombre = 'DEBIL'
+                LIMIT 1
+                """
+            )
+        ).scalar_one()
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_barridos
+                    (contacto_id, nivel_id, latitud, longitud)
+                VALUES
+                    (:contacto_id, :nivel_id, -0.1806532, -78.4678382)
+                """
+            ),
+            {"contacto_id": contacto_id, "nivel_id": nivel_id},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 110,
+                "message": {
+                    "from": {"id": chat_id_admin, "first_name": "Admin"},
+                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    "text": "/reporte_lluvia_grafico",
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        data = respuesta.json()
+        assert data["estado"] == "REPORTE_LLUVIA_GRAFICO_ENVIADO"
+        assert data["mensaje"].startswith("https://quickchart.io/chart?")
+    finally:
+        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
 def test_webhook_reporte_evento_queda_seleccionado() -> None:
     connection = engine.connect()
     transaction = connection.begin()
