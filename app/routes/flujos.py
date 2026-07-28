@@ -17,7 +17,9 @@ from app.schemas import (
     FotoEventoRespuesta,
     MAPA_NIVELES_LLUVIAS,
     NivelLluvia,
+    NivelLluviaResumenRespuesta,
     RegistrarBarridoRequest,
+    ReporteLluviaRespuesta,
     RegistroFlujoRespuesta,
     SolicitarBarridoRequest,
     TelegramWebhookRespuesta,
@@ -699,7 +701,7 @@ def _ejecutar_script_barrido_lluvia(
     return len(contactos), telefonos_faltantes
 
 
-def _generar_reporte_lluvia(db: Session) -> str:
+def _obtener_reporte_lluvia(db: Session) -> ReporteLluviaRespuesta:
     conteos = {nivel.value: 0 for nivel in NivelLluvia}
     rows = db.execute(
         select(CatalogoNivelEvento.nombre, func.count(TelegramBarrido.id))
@@ -711,15 +713,28 @@ def _generar_reporte_lluvia(db: Session) -> str:
         if nombre in conteos:
             conteos[str(nombre)] = int(total)
 
-    total_barridos = sum(conteos.values())
+    return ReporteLluviaRespuesta(
+        total=sum(conteos.values()),
+        niveles=[
+            NivelLluviaResumenRespuesta(
+                nivel=nivel,
+                etiqueta=ETIQUETAS_NIVELES_LLUVIA[nivel.value],
+                cantidad=conteos[nivel.value],
+            )
+            for nivel in NivelLluvia
+        ],
+    )
+
+
+def _formatear_reporte_lluvia(reporte: ReporteLluviaRespuesta) -> str:
     lineas = [
         "Reporte de barridos de lluvia",
-        f"Total de reportes: {total_barridos}",
+        f"Total de reportes: {reporte.total}",
         "",
         "Intensidad por tipo:",
     ]
-    for nivel in NivelLluvia:
-        lineas.append(f"- {ETIQUETAS_NIVELES_LLUVIA[nivel.value]}: {conteos[nivel.value]}")
+    for nivel in reporte.niveles:
+        lineas.append(f"- {nivel.etiqueta}: {nivel.cantidad}")
     return "\n".join(lineas)
 
 
@@ -1155,11 +1170,12 @@ def recibir_webhook_telegram(
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
-        reporte = _generar_reporte_lluvia(db)
-        _responder_si_es_posible(sender, int(chat_id), reporte)
+        reporte = _obtener_reporte_lluvia(db)
+        texto_reporte = _formatear_reporte_lluvia(reporte)
+        _responder_si_es_posible(sender, int(chat_id), texto_reporte)
         return TelegramWebhookRespuesta(
             estado="REPORTE_LLUVIA_GENERADO",
-            mensaje=reporte,
+            mensaje=texto_reporte,
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -1710,6 +1726,18 @@ def registrar_respuesta_barrido(
         latitud=float(barrido.latitud),
         longitud=float(barrido.longitud),
     )
+
+
+@router.get(
+    "/barridos/reporte-lluvia",
+    response_model=ReporteLluviaRespuesta,
+    tags=["barridos"],
+    summary="Obtener resumen de barridos de lluvia por intensidad",
+)
+def obtener_reporte_lluvia(
+    db: Session = Depends(get_db),
+) -> ReporteLluviaRespuesta:
+    return _obtener_reporte_lluvia(db)
 
 
 @router.get(

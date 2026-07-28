@@ -139,6 +139,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/boletines" in paths
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
+    assert "/api/telegram/barridos/reporte-lluvia" in paths
     assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
     assert "/api/telegram/eventos/seguimientos" in paths
@@ -761,6 +762,83 @@ def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
         assert "- Muy fuerte: 1" in data["mensaje"]
     finally:
         flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_endpoint_reporte_lluvia_devuelve_json_agrupado_por_intensidad() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593014{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_niveles(session)
+        session.execute(text("DELETE FROM telegram_barridos"))
+        contacto_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                RETURNING id
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        ).scalar_one()
+        niveles = {
+            row["nombre"]: row["id"]
+            for row in session.execute(
+                text(
+                    """
+                    SELECT id, nombre
+                    FROM catalogo_niveles_evento
+                    WHERE nombre IN ('DEBIL', 'MODERADO', 'FUERTE', 'MUY_FUERTE')
+                    """
+                )
+            ).mappings()
+        }
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_barridos
+                    (contacto_id, nivel_id, latitud, longitud)
+                VALUES
+                    (:contacto_id, :nivel_moderado, -0.1806532, -78.4678382),
+                    (:contacto_id, :nivel_moderado, -0.1806532, -78.4678382),
+                    (:contacto_id, :nivel_muy_fuerte, -0.1806532, -78.4678382)
+                """
+            ),
+            {
+                "contacto_id": contacto_id,
+                "nivel_moderado": niveles["MODERADO"],
+                "nivel_muy_fuerte": niveles["MUY_FUERTE"],
+            },
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        client = TestClient(app)
+
+        respuesta = client.get("/api/telegram/barridos/reporte-lluvia")
+
+        assert respuesta.status_code == 200
+        data = respuesta.json()
+        assert data["total"] == 3
+        cantidades = {item["nivel"]: item["cantidad"] for item in data["niveles"]}
+        assert cantidades == {
+            "DEBIL": 0,
+            "MODERADO": 2,
+            "FUERTE": 0,
+            "MUY_FUERTE": 1,
+        }
+    finally:
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()

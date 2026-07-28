@@ -99,6 +99,17 @@ class BarridoGuardadoRespuesta(BaseModel):
     longitud: float
 
 
+class NivelLluviaResumenRespuesta(BaseModel):
+    nivel: NivelLluvia
+    etiqueta: str
+    cantidad: int
+
+
+class ReporteLluviaRespuesta(BaseModel):
+    total: int
+    niveles: list[NivelLluviaResumenRespuesta]
+
+
 class TelegramWebhookRespuesta(BaseModel):
     estado: str
     mensaje: str
