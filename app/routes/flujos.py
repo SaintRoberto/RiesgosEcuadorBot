@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -67,6 +67,12 @@ MENSAJE_UBICACION_EVENTO_REQUERIDA = (
 MENSAJE_MENU_PRINCIPAL = "Bienvenido. Seleccione una opcion:"
 OPCION_REPORTE_BARRIDO = "Reporte de barrido"
 OPCION_REPORTE_EVENTO = "Reporte de evento"
+ETIQUETAS_NIVELES_LLUVIA = {
+    NivelLluvia.debil.value: "Debil",
+    NivelLluvia.moderado.value: "Moderado",
+    NivelLluvia.fuerte.value: "Fuerte",
+    NivelLluvia.muy_fuerte.value: "Muy fuerte",
+}
 CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
 MENSAJE_MENU_SCRIPTS = "Seleccione el script que desea ejecutar:"
@@ -514,6 +520,11 @@ def _es_comando_scripts(texto: str) -> bool:
     return normalizado.startswith("/scripts") or normalizado == "scripts"
 
 
+def _es_comando_reporte_lluvia(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado.startswith("/reporte_lluvia") or normalizado == "reporte lluvia"
+
+
 def _puede_ejecutar_scripts(telegram_user_id: int) -> bool:
     return telegram_user_id in SCRIPT_ADMIN_TELEGRAM_USER_IDS
 
@@ -686,6 +697,30 @@ def _ejecutar_script_barrido_lluvia(
             fecha_barrido=fecha_barrido,
         )
     return len(contactos), telefonos_faltantes
+
+
+def _generar_reporte_lluvia(db: Session) -> str:
+    conteos = {nivel.value: 0 for nivel in NivelLluvia}
+    rows = db.execute(
+        select(CatalogoNivelEvento.nombre, func.count(TelegramBarrido.id))
+        .join(TelegramBarrido, TelegramBarrido.nivel_id == CatalogoNivelEvento.id)
+        .where(TelegramBarrido.activo.is_(True))
+        .group_by(CatalogoNivelEvento.nombre)
+    ).all()
+    for nombre, total in rows:
+        if nombre in conteos:
+            conteos[str(nombre)] = int(total)
+
+    total_barridos = sum(conteos.values())
+    lineas = [
+        "Reporte de barridos de lluvia",
+        f"Total de reportes: {total_barridos}",
+        "",
+        "Intensidad por tipo:",
+    ]
+    for nivel in NivelLluvia:
+        lineas.append(f"- {ETIQUETAS_NIVELES_LLUVIA[nivel.value]}: {conteos[nivel.value]}")
+    return "\n".join(lineas)
 
 
 def _extraer_foto_de_mensaje(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -1099,6 +1134,32 @@ def recibir_webhook_telegram(
         return TelegramWebhookRespuesta(
             estado="ESPERANDO_PASSCODE_SCRIPT",
             mensaje="Se solicito el passcode para ejecutar scripts.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    if _es_comando_reporte_lluvia(texto):
+        contacto = _upsert_contacto_telegram(
+            db=db,
+            chat_id=int(chat_id),
+            telegram_user_id=int(telegram_user_id),
+            nombres=nombres,
+        )
+        if not _puede_ejecutar_scripts(int(telegram_user_id)):
+            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ver este reporte.")
+            return TelegramWebhookRespuesta(
+                estado="REPORTE_LLUVIA_NO_AUTORIZADO",
+                mensaje="El usuario no tiene permisos para ver el reporte de lluvia.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        reporte = _generar_reporte_lluvia(db)
+        _responder_si_es_posible(sender, int(chat_id), reporte)
+        return TelegramWebhookRespuesta(
+            estado="REPORTE_LLUVIA_GENERADO",
+            mensaje=reporte,
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
