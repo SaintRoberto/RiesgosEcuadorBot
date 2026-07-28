@@ -563,9 +563,8 @@ def _validar_passcode_scripts(
             _responder_si_es_posible(
                 sender,
                 contacto.chat_id,
-                "Passcode incorrecto. Se alcanzo el maximo de intentos. Escriba /scripts para intentar nuevamente.",
+                "Passcode incorrecto. Se alcanzo el maximo de intentos.",
             )
-            _mostrar_menu_principal_si_es_posible(sender, contacto.chat_id)
             return TelegramWebhookRespuesta(
                 estado="PASSCODE_SCRIPT_BLOQUEADO",
                 mensaje="Se alcanzo el maximo de intentos de passcode.",
