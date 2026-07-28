@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.routes import flujos
 from app.database import engine, get_db
 from app.main import app
 from app.telegram import get_optional_telegram_sender, get_telegram_sender
@@ -369,6 +370,70 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         connection.close()
 
 
+def test_webhook_barrido_esperando_ubicacion_repite_instruccion_gps() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593011{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        seleccion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 70,
+                "callback_query": {
+                    "id": "callback-barrido-gps",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "REPORTE_BARRIDO",
+                },
+            },
+        )
+        assert seleccion.status_code == 200
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 71,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "no puedo enviar ubicacion",
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "UBICACION_REQUERIDA"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
 def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
     connection = engine.connect()
     transaction = connection.begin()
@@ -412,6 +477,117 @@ def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
         assert respuesta.json()["estado"] == "MENU_PRINCIPAL"
         assert respuesta.json()["telefono"] == telefono
     finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono_1 = f"+593012{uuid4().int % 1000000:06d}"
+    telefono_2 = f"09{uuid4().int % 100000000:08d}"
+    chat_id_admin = -(uuid4().int % 1000000000)
+    chat_id_1 = -(uuid4().int % 1000000000)
+    chat_id_2 = -(uuid4().int % 1000000000)
+    telefonos_originales = flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS
+    admins_originales = flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS
+
+    try:
+        flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS = [telefono_1, telefono_2]
+        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id_1, :chat_id_1, :telefono_1, true),
+                    (:telegram_user_id_2, :chat_id_2, :telefono_2, true)
+                """
+            ),
+            {
+                "telegram_user_id_1": chat_id_1,
+                "chat_id_1": chat_id_1,
+                "telefono_1": telefono_1,
+                "telegram_user_id_2": chat_id_2,
+                "chat_id_2": chat_id_2,
+                "telefono_2": telefono_2,
+            },
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        menu = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 80,
+                "message": {
+                    "from": {"id": chat_id_admin, "first_name": "Admin"},
+                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    "text": "/scripts",
+                },
+            },
+        )
+        assert menu.status_code == 200
+        assert menu.json()["estado"] == "ESPERANDO_PASSCODE_SCRIPT"
+
+        passcode = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 81,
+                "message": {
+                    "from": {"id": chat_id_admin, "first_name": "Admin"},
+                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    "text": "Sngre.2026",
+                },
+            },
+        )
+        assert passcode.status_code == 200
+        assert passcode.json()["estado"] == "MENU_SCRIPTS"
+
+        ejecucion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 82,
+                "callback_query": {
+                    "id": "callback-script-lluvia",
+                    "from": {"id": chat_id_admin, "first_name": "Admin"},
+                    "message": {
+                        "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
+                    },
+                    "data": "SCRIPT_BARRIDO_LLUVIA",
+                },
+            },
+        )
+        assert ejecucion.status_code == 200
+        assert ejecucion.json()["estado"] == "SCRIPT_BARRIDO_LLUVIA_EJECUTADO"
+
+        total = session.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM telegram_consultas tc
+                JOIN telegram_contactos c ON c.id = tc.contacto_id
+                WHERE c.telefono IN (:telefono_1, :telefono_2)
+                  AND tc.tipo_consulta = 'BARRIDO_GAD'
+                  AND tc.estado = 'PROCESANDO'
+                  AND tc.codigo = 'BARRIDO-AUTO'
+                """
+            ),
+            {"telefono_1": telefono_1, "telefono_2": telefono_2},
+        ).scalar_one()
+        assert total == 2
+    finally:
+        flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS = telefonos_originales
+        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()

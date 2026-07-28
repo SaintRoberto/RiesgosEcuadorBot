@@ -31,6 +31,7 @@ TIPO_BARRIDO = "BARRIDO_GAD"
 TIPO_SEGUIMIENTO = "SEGUIMIENTO_EVENTO"
 TIPO_REGISTRO_TELEFONO = "REGISTRO_TELEFONO"
 TIPO_REPORTE_EVENTO = "REPORTE_EVENTO"
+TIPO_SCRIPT_AUTH = "SCRIPT_AUTH"
 FLUJO_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 FLUJO_REPORTE_EVENTO = "REPORTE_EVENTO"
 PASO_EVENTO_FOTO = "ESPERANDO_FOTO"
@@ -49,13 +50,39 @@ MENSAJE_SELECCION_NIVEL_LLUVIA = (
     "Ubicacion recibida. Ahora seleccione el nivel de lluvia:\n\n"
     "1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte"
 )
-MENSAJE_SOLICITAR_UBICACION = "Hola. Comparta su ubicacion actual usando Telegram para registrar el barrido."
-MENSAJE_SOLICITAR_UBICACION_EVENTO = "Comparta la ubicacion del evento usando Telegram."
+MENSAJE_SOLICITAR_UBICACION = (
+    "Para registrar el barrido, active el GPS del celular y permita el acceso a ubicacion en Telegram. "
+    "Luego presione Compartir ubicacion."
+)
+MENSAJE_SOLICITAR_UBICACION_EVENTO = (
+    "Para registrar el evento, active el GPS del celular y permita el acceso a ubicacion en Telegram. "
+    "Luego presione Compartir ubicacion."
+)
+MENSAJE_UBICACION_BARRIDO_REQUERIDA = (
+    "Aun falta compartir la ubicacion del barrido. Active el GPS y use el boton Compartir ubicacion."
+)
+MENSAJE_UBICACION_EVENTO_REQUERIDA = (
+    "Aun falta compartir la ubicacion del evento. Active el GPS y use el boton Compartir ubicacion."
+)
 MENSAJE_MENU_PRINCIPAL = "Bienvenido. Seleccione una opcion:"
 OPCION_REPORTE_BARRIDO = "Reporte de barrido"
 OPCION_REPORTE_EVENTO = "Reporte de evento"
 CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
+MENSAJE_MENU_SCRIPTS = "Seleccione el script que desea ejecutar:"
+OPCION_SCRIPT_BARRIDO_LLUVIA = "Ejecutar script de barridos lluvia"
+OPCION_SCRIPT_BARRIDO_RIOS = "Ejecutar script de barridos rios"
+OPCION_SCRIPT_BARRIDO_SISMOS = "Ejecutar script de barridos sismos"
+OPCION_SCRIPT_BARRIDO_CENIZA = "Ejecutar script de barridos ceniza"
+CALLBACK_SCRIPT_BARRIDO_LLUVIA = "SCRIPT_BARRIDO_LLUVIA"
+CALLBACK_SCRIPT_BARRIDO_RIOS = "SCRIPT_BARRIDO_RIOS"
+CALLBACK_SCRIPT_BARRIDO_SISMOS = "SCRIPT_BARRIDO_SISMOS"
+CALLBACK_SCRIPT_BARRIDO_CENIZA = "SCRIPT_BARRIDO_CENIZA"
+SCRIPT_BARRIDO_LLUVIA_TELEFONOS = ["+593984374917", "0987223658"]
+SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
+SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su ubicacion y nivel de lluvia."
+SCRIPT_ADMIN_TELEGRAM_USER_IDS = {6869758976}
+SCRIPT_PASSCODE = "Sngre.2026"
 MEDIA_TYPE_POR_EXTENSION = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -332,12 +359,32 @@ def _teclado_menu_principal() -> dict[str, Any]:
     }
 
 
+def _teclado_menu_scripts() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": OPCION_SCRIPT_BARRIDO_LLUVIA, "callback_data": CALLBACK_SCRIPT_BARRIDO_LLUVIA}],
+            [{"text": OPCION_SCRIPT_BARRIDO_RIOS, "callback_data": CALLBACK_SCRIPT_BARRIDO_RIOS}],
+            [{"text": OPCION_SCRIPT_BARRIDO_SISMOS, "callback_data": CALLBACK_SCRIPT_BARRIDO_SISMOS}],
+            [{"text": OPCION_SCRIPT_BARRIDO_CENIZA, "callback_data": CALLBACK_SCRIPT_BARRIDO_CENIZA}],
+        ],
+    }
+
+
 def _mostrar_menu_principal_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
     _responder_si_es_posible(
         sender,
         chat_id,
         MENSAJE_MENU_PRINCIPAL,
         reply_markup=_teclado_menu_principal(),
+    )
+
+
+def _mostrar_menu_scripts_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(
+        sender,
+        chat_id,
+        MENSAJE_MENU_SCRIPTS,
+        reply_markup=_teclado_menu_scripts(),
     )
 
 
@@ -461,6 +508,67 @@ def _es_comando_registro(texto: str) -> bool:
     }
 
 
+def _es_comando_scripts(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado.startswith("/scripts") or normalizado == "scripts"
+
+
+def _puede_ejecutar_scripts(telegram_user_id: int) -> bool:
+    return telegram_user_id in SCRIPT_ADMIN_TELEGRAM_USER_IDS
+
+
+def _iniciar_auth_scripts(db: Session, contacto: TelegramContacto, sender: TelegramSender | None) -> None:
+    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_SCRIPT_AUTH)
+    if registro is None:
+        registro = TelegramConsulta(
+            contacto_id=contacto.id,
+            usuario_id=contacto.usuario_id,
+            tipo_consulta=TIPO_SCRIPT_AUTH,
+            consulta="Autenticacion para ejecutar scripts",
+            parametros={"flujo": TIPO_SCRIPT_AUTH},
+            estado="PROCESANDO",
+        )
+        db.add(registro)
+    else:
+        registro.estado = "PROCESANDO"
+    db.commit()
+    _responder_si_es_posible(sender, contacto.chat_id, "Ingrese el passcode para ejecutar scripts.")
+
+
+def _validar_passcode_scripts(
+    db: Session,
+    contacto: TelegramContacto,
+    texto: str,
+    sender: TelegramSender | None,
+) -> TelegramWebhookRespuesta | None:
+    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_SCRIPT_AUTH)
+    if registro is None:
+        return None
+
+    if texto.strip() != SCRIPT_PASSCODE:
+        _responder_si_es_posible(sender, contacto.chat_id, "Passcode incorrecto. Intente nuevamente.")
+        return TelegramWebhookRespuesta(
+            estado="PASSCODE_SCRIPT_INVALIDO",
+            mensaje="Passcode incorrecto.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    registro.estado = "COMPLETADA"
+    registro.fecha_respuesta = datetime.now(timezone.utc)
+    registro.respuesta = {"autenticado": True}
+    db.commit()
+    _mostrar_menu_scripts_si_es_posible(sender, contacto.chat_id)
+    return TelegramWebhookRespuesta(
+        estado="MENU_SCRIPTS",
+        mensaje="Passcode validado. Se mostro el menu de scripts.",
+        contacto_id=contacto.id,
+        telefono=contacto.telefono,
+        chat_id=contacto.chat_id,
+    )
+
+
 def _es_opcion_reporte_barrido(texto: str) -> bool:
     normalizado = _texto_normalizado(texto)
     return normalizado in {"1", "1.", "1)", "barrido", "reporte de barrido"}
@@ -517,6 +625,34 @@ def _iniciar_reporte_barrido(
         )
     else:
         _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
+
+
+def _ejecutar_script_barrido_lluvia(
+    db: Session,
+    sender: TelegramSender | None,
+) -> tuple[int, list[str]]:
+    telefonos = list(dict.fromkeys(SCRIPT_BARRIDO_LLUVIA_TELEFONOS))
+    contactos = list(
+        db.scalars(
+            select(TelegramContacto).where(
+                TelegramContacto.telefono.in_(telefonos),
+                TelegramContacto.activo.is_(True),
+            )
+        )
+    )
+    telefonos_encontrados = {contacto.telefono for contacto in contactos}
+    telefonos_faltantes = [telefono for telefono in telefonos if telefono not in telefonos_encontrados]
+    fecha_barrido = date.today()
+    for contacto in contactos:
+        _iniciar_reporte_barrido(
+            db=db,
+            contacto=contacto,
+            sender=sender,
+            codigo=SCRIPT_BARRIDO_LLUVIA_CODIGO,
+            mensaje=SCRIPT_BARRIDO_LLUVIA_MENSAJE,
+            fecha_barrido=fecha_barrido,
+        )
+    return len(contactos), telefonos_faltantes
 
 
 def _extraer_foto_de_mensaje(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -767,7 +903,7 @@ def _recibir_respuesta_encuesta_lluvia(
         _responder_si_es_posible(
             sender,
             contacto.chat_id,
-            "Primero comparta su ubicacion actual usando Telegram.",
+            MENSAJE_UBICACION_BARRIDO_REQUERIDA,
         )
         return TelegramWebhookRespuesta(
             estado="UBICACION_REQUERIDA",
@@ -823,10 +959,46 @@ def _recibir_callback_menu_principal(
         nombres=_nombre_desde_update(origen, chat),
     )
 
+    if str(data).startswith("SCRIPT_") and not _puede_ejecutar_scripts(int(telegram_user_id)):
+        _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ejecutar scripts.")
+        return TelegramWebhookRespuesta(
+            estado="SCRIPT_NO_AUTORIZADO",
+            mensaje="El usuario no tiene permisos para ejecutar scripts.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
     if data == CALLBACK_REPORTE_BARRIDO:
         return _seleccionar_reporte_barrido(db, contacto, sender)
     if data == CALLBACK_REPORTE_EVENTO:
         return _seleccionar_reporte_evento(db, contacto, sender)
+    if data == CALLBACK_SCRIPT_BARRIDO_LLUVIA:
+        total, faltantes = _ejecutar_script_barrido_lluvia(db, sender)
+        mensaje = f"Script de barridos lluvia ejecutado. Solicitudes enviadas: {total}."
+        if faltantes:
+            mensaje = f"{mensaje} Telefonos no encontrados o inactivos: {', '.join(faltantes)}."
+        _responder_si_es_posible(sender, int(chat_id), mensaje)
+        return TelegramWebhookRespuesta(
+            estado="SCRIPT_BARRIDO_LLUVIA_EJECUTADO",
+            mensaje=mensaje,
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+    if data in {
+        CALLBACK_SCRIPT_BARRIDO_RIOS,
+        CALLBACK_SCRIPT_BARRIDO_SISMOS,
+        CALLBACK_SCRIPT_BARRIDO_CENIZA,
+    }:
+        _responder_si_es_posible(sender, int(chat_id), "Ese script aun no esta configurado.")
+        return TelegramWebhookRespuesta(
+            estado="SCRIPT_NO_CONFIGURADO",
+            mensaje="El script seleccionado aun no esta configurado.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
 
     _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
     return TelegramWebhookRespuesta(
@@ -873,6 +1045,37 @@ def recibir_webhook_telegram(
         )
 
     nombres = _nombre_desde_update(origen, chat)
+
+    if _es_comando_scripts(texto):
+        contacto = _upsert_contacto_telegram(
+            db=db,
+            chat_id=int(chat_id),
+            telegram_user_id=int(telegram_user_id),
+            nombres=nombres,
+        )
+        if not _puede_ejecutar_scripts(int(telegram_user_id)):
+            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ejecutar scripts.")
+            return TelegramWebhookRespuesta(
+                estado="SCRIPT_NO_AUTORIZADO",
+                mensaje="El usuario no tiene permisos para ejecutar scripts.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        _iniciar_auth_scripts(db, contacto, sender)
+        return TelegramWebhookRespuesta(
+            estado="ESPERANDO_PASSCODE_SCRIPT",
+            mensaje="Se solicito el passcode para ejecutar scripts.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    contacto_auth_scripts = _contacto_por_chat_id(db, int(chat_id))
+    if contacto_auth_scripts and _puede_ejecutar_scripts(int(telegram_user_id)):
+        respuesta_auth = _validar_passcode_scripts(db, contacto_auth_scripts, texto, sender)
+        if respuesta_auth is not None:
+            return respuesta_auth
 
     if _es_inicio_o_menu(texto):
         contacto = _upsert_contacto_telegram(
@@ -1123,13 +1326,42 @@ def recibir_webhook_telegram(
                 chat_id=contacto_evento.chat_id,
             )
         if contacto_evento and registro_evento and paso_evento == PASO_EVENTO_UBICACION:
-            _solicitar_ubicacion_evento_si_es_posible(sender, int(chat_id))
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                MENSAJE_UBICACION_EVENTO_REQUERIDA,
+                reply_markup=_teclado_solicitar_ubicacion(),
+            )
             return TelegramWebhookRespuesta(
                 estado="UBICACION_EVENTO_REQUERIDA",
                 mensaje="El reporte de evento espera ubicacion.",
                 contacto_id=contacto_evento.id,
                 telefono=contacto_evento.telefono,
                 chat_id=contacto_evento.chat_id,
+            )
+
+        contacto_barrido = contacto_evento or _contacto_por_chat_id(db, int(chat_id))
+        registro_barrido = (
+            _consulta_barrido_activa_por_contacto(db, contacto_barrido.id) if contacto_barrido is not None else None
+        )
+        if (
+            contacto_barrido
+            and registro_barrido
+            and (registro_barrido.parametros or {}).get("flujo") == FLUJO_REPORTE_BARRIDO
+            and not (registro_barrido.parametros or {}).get("ubicacion_pendiente")
+        ):
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                MENSAJE_UBICACION_BARRIDO_REQUERIDA,
+                reply_markup=_teclado_solicitar_ubicacion(),
+            )
+            return TelegramWebhookRespuesta(
+                estado="UBICACION_REQUERIDA",
+                mensaje="El reporte de barrido espera ubicacion.",
+                contacto_id=contacto_barrido.id,
+                telefono=contacto_barrido.telefono,
+                chat_id=contacto_barrido.chat_id,
             )
 
     nivel = MAPA_NIVELES_LLUVIAS.get(texto.strip())
@@ -1153,7 +1385,7 @@ def recibir_webhook_telegram(
             _responder_si_es_posible(
                 sender,
                 int(chat_id),
-                "Primero comparta su ubicacion actual usando Telegram.",
+                MENSAJE_UBICACION_BARRIDO_REQUERIDA,
             )
             return TelegramWebhookRespuesta(
                 estado="UBICACION_REQUERIDA",
