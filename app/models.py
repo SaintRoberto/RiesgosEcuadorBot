@@ -3,7 +3,7 @@ from typing import Any
 
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Identity, Index, Numeric, String, Text, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Identity, Index, Integer, Numeric, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,6 +45,53 @@ class TipoAlerta(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     descripcion: Mapped[str] = mapped_column(String(150), nullable=False, unique=True)
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    fecha_creacion: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class AlertaEncuesta(Base):
+    __tablename__ = "alerta_encuesta"
+    __table_args__ = (
+        Index("idx_alerta_encuesta_tipo_alerta", "tipo_alerta_id"),
+        Index("uq_alerta_encuesta_tipo_orden", "tipo_alerta_id", "orden", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tipo_alerta_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("tipo_alertas.id", name="fk_alerta_encuesta_tipo_alerta"),
+        nullable=False,
+    )
+    nombre: Mapped[str] = mapped_column(String(150), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    fecha_creacion: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class AlertaRecomendacion(Base):
+    __tablename__ = "alerta_recomendaciones"
+    __table_args__ = (
+        Index("idx_alerta_recomendaciones_tipo_alerta", "tipo_alerta_id"),
+        Index("uq_alerta_recomendaciones_tipo_orden", "tipo_alerta_id", "orden", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tipo_alerta_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("tipo_alertas.id", name="fk_alerta_recomendaciones_tipo_alerta"),
+        nullable=False,
+    )
+    recomendacion: Mapped[str] = mapped_column(Text, nullable=False)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     fecha_creacion: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

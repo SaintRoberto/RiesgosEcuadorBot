@@ -79,6 +79,23 @@ class TipoAlertaRespuesta(BaseModel):
     activo: bool
 
 
+class AlertaEncuestaRespuesta(BaseModel):
+    id: int
+    tipo_alerta_id: int
+    nombre: str
+    descripcion: str | None
+    orden: int
+    activo: bool
+
+
+class AlertaRecomendacionRespuesta(BaseModel):
+    id: int
+    tipo_alerta_id: int
+    recomendacion: str
+    orden: int
+    activo: bool
+
+
 class RegistroFlujoRespuesta(BaseModel):
     id: int
     telefono: str | None

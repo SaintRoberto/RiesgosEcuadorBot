@@ -10,8 +10,19 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CatalogoNivelEvento, TelegramBarrido, TelegramConsulta, TelegramContacto, TelegramEvento, TipoAlerta
+from app.models import (
+    AlertaEncuesta,
+    AlertaRecomendacion,
+    CatalogoNivelEvento,
+    TelegramBarrido,
+    TelegramConsulta,
+    TelegramContacto,
+    TelegramEvento,
+    TipoAlerta,
+)
 from app.schemas import (
+    AlertaEncuestaRespuesta,
+    AlertaRecomendacionRespuesta,
     BarridoGuardadoRespuesta,
     CrearBoletinRequest,
     CrearSeguimientoEventoRequest,
@@ -169,6 +180,27 @@ def _tipo_alerta_respuesta(tipo_alerta: TipoAlerta) -> TipoAlertaRespuesta:
         id=tipo_alerta.id,
         descripcion=tipo_alerta.descripcion,
         activo=tipo_alerta.activo,
+    )
+
+
+def _alerta_encuesta_respuesta(alerta_encuesta: AlertaEncuesta) -> AlertaEncuestaRespuesta:
+    return AlertaEncuestaRespuesta(
+        id=alerta_encuesta.id,
+        tipo_alerta_id=alerta_encuesta.tipo_alerta_id,
+        nombre=alerta_encuesta.nombre,
+        descripcion=alerta_encuesta.descripcion,
+        orden=alerta_encuesta.orden,
+        activo=alerta_encuesta.activo,
+    )
+
+
+def _alerta_recomendacion_respuesta(alerta_recomendacion: AlertaRecomendacion) -> AlertaRecomendacionRespuesta:
+    return AlertaRecomendacionRespuesta(
+        id=alerta_recomendacion.id,
+        tipo_alerta_id=alerta_recomendacion.tipo_alerta_id,
+        recomendacion=alerta_recomendacion.recomendacion,
+        orden=alerta_recomendacion.orden,
+        activo=alerta_recomendacion.activo,
     )
 
 
@@ -1281,6 +1313,96 @@ def obtener_tipo_alerta(
             detail="Tipo de alerta no encontrado.",
         )
     return _tipo_alerta_respuesta(tipo_alerta)
+
+
+@router.get(
+    "/alerta-encuesta",
+    response_model=list[AlertaEncuestaRespuesta],
+    tags=["tipo alertas"],
+    summary="Listar opciones de encuesta de alertas",
+)
+def listar_alerta_encuesta(
+    tipo_alerta_id: int | None = None,
+    activo: bool | None = True,
+    db: Session = Depends(get_db),
+) -> list[AlertaEncuestaRespuesta]:
+    filtros = []
+    if tipo_alerta_id is not None:
+        filtros.append(AlertaEncuesta.tipo_alerta_id == tipo_alerta_id)
+    if activo is not None:
+        filtros.append(AlertaEncuesta.activo.is_(activo))
+    opciones = list(
+        db.scalars(
+            select(AlertaEncuesta)
+            .where(*filtros)
+            .order_by(AlertaEncuesta.tipo_alerta_id, AlertaEncuesta.orden)
+        )
+    )
+    return [_alerta_encuesta_respuesta(opcion) for opcion in opciones]
+
+
+@router.get(
+    "/tipo-alertas/{tipo_alerta_id}/encuesta",
+    response_model=list[AlertaEncuestaRespuesta],
+    tags=["tipo alertas"],
+    summary="Listar opciones de encuesta por tipo de alerta",
+)
+def listar_encuesta_por_tipo_alerta(
+    tipo_alerta_id: int,
+    activo: bool | None = True,
+    db: Session = Depends(get_db),
+) -> list[AlertaEncuestaRespuesta]:
+    if db.get(TipoAlerta, tipo_alerta_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tipo de alerta no encontrado.",
+        )
+    return listar_alerta_encuesta(tipo_alerta_id=tipo_alerta_id, activo=activo, db=db)
+
+
+@router.get(
+    "/alerta-recomendaciones",
+    response_model=list[AlertaRecomendacionRespuesta],
+    tags=["tipo alertas"],
+    summary="Listar recomendaciones de alertas",
+)
+def listar_alerta_recomendaciones(
+    tipo_alerta_id: int | None = None,
+    activo: bool | None = True,
+    db: Session = Depends(get_db),
+) -> list[AlertaRecomendacionRespuesta]:
+    filtros = []
+    if tipo_alerta_id is not None:
+        filtros.append(AlertaRecomendacion.tipo_alerta_id == tipo_alerta_id)
+    if activo is not None:
+        filtros.append(AlertaRecomendacion.activo.is_(activo))
+    recomendaciones = list(
+        db.scalars(
+            select(AlertaRecomendacion)
+            .where(*filtros)
+            .order_by(AlertaRecomendacion.tipo_alerta_id, AlertaRecomendacion.orden)
+        )
+    )
+    return [_alerta_recomendacion_respuesta(recomendacion) for recomendacion in recomendaciones]
+
+
+@router.get(
+    "/tipo-alertas/{tipo_alerta_id}/recomendaciones",
+    response_model=list[AlertaRecomendacionRespuesta],
+    tags=["tipo alertas"],
+    summary="Listar recomendaciones por tipo de alerta",
+)
+def listar_recomendaciones_por_tipo_alerta(
+    tipo_alerta_id: int,
+    activo: bool | None = True,
+    db: Session = Depends(get_db),
+) -> list[AlertaRecomendacionRespuesta]:
+    if db.get(TipoAlerta, tipo_alerta_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tipo de alerta no encontrado.",
+        )
+    return listar_alerta_recomendaciones(tipo_alerta_id=tipo_alerta_id, activo=activo, db=db)
 
 
 @router.post(

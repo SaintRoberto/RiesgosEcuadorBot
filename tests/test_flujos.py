@@ -142,6 +142,99 @@ def _asegurar_tipo_alertas(session: Session) -> None:
     )
 
 
+def _asegurar_catalogos_alertas(session: Session) -> None:
+    _asegurar_tipo_alertas(session)
+    session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS public.alerta_encuesta
+            (
+                id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                tipo_alerta_id bigint NOT NULL,
+                nombre varchar(150) NOT NULL,
+                descripcion text,
+                orden integer NOT NULL,
+                activo boolean NOT NULL DEFAULT true,
+                fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
+                CONSTRAINT fk_alerta_encuesta_tipo_alerta
+                    FOREIGN KEY (tipo_alerta_id)
+                    REFERENCES public.tipo_alertas (id),
+                CONSTRAINT uq_alerta_encuesta_tipo_orden
+                    UNIQUE (tipo_alerta_id, orden)
+            )
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS public.alerta_recomendaciones
+            (
+                id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                tipo_alerta_id bigint NOT NULL,
+                recomendacion text NOT NULL,
+                orden integer NOT NULL,
+                activo boolean NOT NULL DEFAULT true,
+                fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
+                CONSTRAINT fk_alerta_recomendaciones_tipo_alerta
+                    FOREIGN KEY (tipo_alerta_id)
+                    REFERENCES public.tipo_alertas (id),
+                CONSTRAINT uq_alerta_recomendaciones_tipo_orden
+                    UNIQUE (tipo_alerta_id, orden)
+            )
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            UPDATE public.alerta_encuesta
+            SET activo = false
+            WHERE tipo_alerta_id IN (4, 6)
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            UPDATE public.alerta_recomendaciones
+            SET activo = false
+            WHERE tipo_alerta_id IN (4, 6)
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO public.alerta_encuesta (tipo_alerta_id, orden, nombre, descripcion)
+            VALUES
+                (6, 1, 'LLUVIA MUY FUERTE', 'Rapido anegamiento de calles.'),
+                (6, 2, 'LLUVIA FUERTE', 'Poco anegamiento de calles que dificulta movilidad.'),
+                (6, 3, 'LLUVIA MODERADA', 'Visibilidad reducida y acumulacion leve de agua.'),
+                (4, 1, 'MUY FUERTE', 'Panico general, personas pierden estabilidad.')
+            ON CONFLICT (tipo_alerta_id, orden) DO UPDATE
+            SET nombre = EXCLUDED.nombre,
+                descripcion = EXCLUDED.descripcion,
+                activo = true
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO public.alerta_recomendaciones (tipo_alerta_id, orden, recomendacion)
+            VALUES
+                (6, 1, 'Evitar transitar en zonas inundadas.'),
+                (6, 2, 'No acercarse a postes, cables o arboles.'),
+                (4, 1, 'Conserve la calma.')
+            ON CONFLICT (tipo_alerta_id, orden) DO UPDATE
+            SET recomendacion = EXCLUDED.recomendacion,
+                activo = true
+            """
+        )
+    )
+
+
 @contextmanager
 def _client_con_contacto() -> Generator[tuple[TestClient, str], None, None]:
     connection = engine.connect()
@@ -193,6 +286,10 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/barridos/reporte-lluvia/grafico/enviar" in paths
     assert "/api/telegram/tipo-alertas" in paths
     assert "/api/telegram/tipo-alertas/{tipo_alerta_id}" in paths
+    assert "/api/telegram/alerta-encuesta" in paths
+    assert "/api/telegram/tipo-alertas/{tipo_alerta_id}/encuesta" in paths
+    assert "/api/telegram/alerta-recomendaciones" in paths
+    assert "/api/telegram/tipo-alertas/{tipo_alerta_id}/recomendaciones" in paths
     assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
     assert "/api/telegram/eventos/seguimientos" in paths
@@ -223,6 +320,54 @@ def test_endpoint_tipo_alertas_lista_catalogo() -> None:
         detalle = client.get("/api/telegram/tipo-alertas/6")
         assert detalle.status_code == 200
         assert detalle.json()["descripcion"] == "LLUVIAS"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+
+    try:
+        _asegurar_catalogos_alertas(session)
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        client = TestClient(app)
+
+        encuesta = client.get("/api/telegram/tipo-alertas/6/encuesta")
+        assert encuesta.status_code == 200
+        encuesta_data = encuesta.json()
+        assert [item["nombre"] for item in encuesta_data] == [
+            "LLUVIA MUY FUERTE",
+            "LLUVIA FUERTE",
+            "LLUVIA MODERADA",
+        ]
+
+        encuesta_filtrada = client.get("/api/telegram/alerta-encuesta", params={"tipo_alerta_id": 4})
+        assert encuesta_filtrada.status_code == 200
+        assert encuesta_filtrada.json()[0]["nombre"] == "MUY FUERTE"
+
+        recomendaciones = client.get("/api/telegram/tipo-alertas/6/recomendaciones")
+        assert recomendaciones.status_code == 200
+        recomendaciones_data = recomendaciones.json()
+        assert [item["recomendacion"] for item in recomendaciones_data] == [
+            "Evitar transitar en zonas inundadas.",
+            "No acercarse a postes, cables o arboles.",
+        ]
+
+        recomendaciones_filtradas = client.get(
+            "/api/telegram/alerta-recomendaciones",
+            params={"tipo_alerta_id": 4},
+        )
+        assert recomendaciones_filtradas.status_code == 200
+        assert recomendaciones_filtradas.json()[0]["recomendacion"] == "Conserve la calma."
     finally:
         app.dependency_overrides.clear()
         session.close()
