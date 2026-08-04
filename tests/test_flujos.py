@@ -434,6 +434,18 @@ def test_webhook_registra_contacto_con_telefono() -> None:
 
     try:
         _asegurar_tipo_alertas(session)
+        flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (0, 0, :telefono, true)
+                """
+            ),
+            {"telefono": telefono},
+        )
 
         def override_get_db() -> Generator[Session, None, None]:
             yield session
@@ -455,7 +467,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
             },
         )
         assert start.status_code == 200
-        assert start.json()["estado"] == "MENU_PRINCIPAL"
+        assert start.json()["estado"] == "ACCESO_NO_AUTORIZADO"
 
         registrar = client.post(
             "/api/telegram/webhook",
@@ -503,6 +515,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         assert row["telegram_user_id"] == chat_id
         assert row["activo"] is True
     finally:
+        flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()
@@ -725,6 +738,18 @@ def test_webhook_selecciona_tipo_alerta_desde_menu() -> None:
 
     try:
         _asegurar_tipo_alertas(session)
+        telefono = f"+593020{uuid4().int % 1000000:06d}"
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        )
 
         def override_get_db() -> Generator[Session, None, None]:
             yield session
@@ -779,11 +804,15 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
                 INSERT INTO telegram_contactos
                     (telegram_user_id, chat_id, telefono, activo)
                 VALUES
+                    (:telegram_user_id_admin, :chat_id_admin, :telefono_admin, true),
                     (:telegram_user_id_1, :chat_id_1, :telefono_1, true),
                     (:telegram_user_id_2, :chat_id_2, :telefono_2, true)
                 """
             ),
             {
+                "telegram_user_id_admin": chat_id_admin,
+                "chat_id_admin": chat_id_admin,
+                "telefono_admin": f"+593099{uuid4().int % 1000000:06d}",
                 "telegram_user_id_1": chat_id_1,
                 "chat_id_1": chat_id_1,
                 "telefono_1": telefono_1,
@@ -878,6 +907,21 @@ def test_webhook_scripts_bloquea_passcode_tras_tres_intentos() -> None:
 
     try:
         flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {
+                "telegram_user_id": chat_id_admin,
+                "chat_id": chat_id_admin,
+                "telefono": f"+593098{uuid4().int % 1000000:06d}",
+            },
+        )
 
         def override_get_db() -> Generator[Session, None, None]:
             yield session

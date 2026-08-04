@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -88,6 +88,10 @@ MENSAJE_MENU_PRINCIPAL = (
     "Por favor seleccione el tipo de alerta que desea enviar a los organismos de gesti\u00f3n de riesgos "
     "y de primera respuesta:"
 )
+MENSAJE_ACCESO_NO_AUTORIZADO = (
+    "Lo sentimos, el n\u00famero indicado no tiene el acceso autorizado para emitir alertas.\n"
+    "\u00a1\u00a1Saludos cordiales!!"
+)
 CALLBACK_TIPO_ALERTA_PREFIX = "TIPO_ALERTA:"
 ETIQUETAS_NIVELES_LLUVIA = {
     NivelLluvia.debil.value: "Debil",
@@ -119,6 +123,8 @@ MEDIA_TYPE_POR_EXTENSION = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
+REGISTROS_TELEFONO_PENDIENTES: dict[int, datetime] = {}
+REGISTRO_TELEFONO_TTL_SEGUNDOS = 600
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
@@ -322,39 +328,29 @@ def _nombre_desde_update(origen: dict[str, Any], chat: dict[str, Any]) -> str | 
     return nombre or None
 
 
-def _upsert_contacto_telegram(
+def _valor_identidad_vacio(valor: int | None) -> bool:
+    return valor is None or int(valor) == 0
+
+
+def _contacto_autorizado_por_identidad(
     db: Session,
     chat_id: int,
     telegram_user_id: int,
-    nombres: str | None,
-    telefono: str | None = None,
-) -> TelegramContacto:
-    contacto = None
-    if telefono:
-        contacto = db.scalars(select(TelegramContacto).where(TelegramContacto.telefono == telefono)).first()
-    if contacto is None:
-        contacto = db.scalars(
-            select(TelegramContacto).where(TelegramContacto.telegram_user_id == telegram_user_id)
-        ).first()
-    if contacto is None:
-        contacto = TelegramContacto(
-            telegram_user_id=telegram_user_id,
-            chat_id=chat_id,
-            telefono=telefono,
-            nombres=nombres,
-            activo=True,
+) -> TelegramContacto | None:
+    return db.scalars(
+        select(TelegramContacto).where(
+            TelegramContacto.activo.is_(True),
+            TelegramContacto.telefono.is_not(None),
+            or_(
+                TelegramContacto.chat_id == chat_id,
+                TelegramContacto.telegram_user_id == telegram_user_id,
+            ),
         )
-        db.add(contacto)
-    else:
-        contacto.telegram_user_id = telegram_user_id
-        contacto.chat_id = chat_id
-        contacto.nombres = nombres or contacto.nombres
-        contacto.activo = True
-        if telefono:
-            contacto.telefono = telefono
-    db.commit()
-    db.refresh(contacto)
-    return contacto
+    ).first()
+
+
+def _responder_acceso_no_autorizado_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(sender, chat_id, MENSAJE_ACCESO_NO_AUTORIZADO)
 
 
 def _responder_si_es_posible(
@@ -376,6 +372,7 @@ def _contacto_por_chat_id(db: Session, chat_id: int) -> TelegramContacto | None:
         select(TelegramContacto).where(
             TelegramContacto.chat_id == chat_id,
             TelegramContacto.activo.is_(True),
+            TelegramContacto.telefono.is_not(None),
         )
     ).first()
 
@@ -385,6 +382,7 @@ def _contacto_por_telegram_user_id(db: Session, telegram_user_id: int) -> Telegr
         select(TelegramContacto).where(
             TelegramContacto.telegram_user_id == telegram_user_id,
             TelegramContacto.activo.is_(True),
+            TelegramContacto.telefono.is_not(None),
         )
     ).first()
 
@@ -498,69 +496,63 @@ def _solicitar_ubicacion_evento_si_es_posible(sender: TelegramSender | None, cha
     )
 
 
-def _iniciar_registro_telefono(
-    db: Session,
-    contacto: TelegramContacto,
-    sender: TelegramSender | None,
-) -> None:
-    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_REGISTRO_TELEFONO)
-    if registro is None:
-        registro = TelegramConsulta(
-            contacto_id=contacto.id,
-            usuario_id=contacto.usuario_id,
-            tipo_consulta=TIPO_REGISTRO_TELEFONO,
-            consulta="Solicitud de registro de telefono institucional",
-            parametros={"flujo": TIPO_REGISTRO_TELEFONO},
-            estado="PROCESANDO",
-        )
-        db.add(registro)
-    else:
-        registro.estado = "PROCESANDO"
-    db.commit()
+def _iniciar_registro_telefono(chat_id: int, sender: TelegramSender | None) -> None:
+    REGISTROS_TELEFONO_PENDIENTES[chat_id] = datetime.now(timezone.utc)
     _responder_si_es_posible(
         sender,
-        contacto.chat_id,
+        chat_id,
         "Por favor envie su numero de telefono institucional. Ejemplo: +593987223658",
     )
 
 
-def _registrar_telefono_pendiente(
+def _registro_telefono_pendiente(chat_id: int) -> bool:
+    fecha_inicio = REGISTROS_TELEFONO_PENDIENTES.get(chat_id)
+    if fecha_inicio is None:
+        return False
+    edad = (datetime.now(timezone.utc) - fecha_inicio).total_seconds()
+    if edad > REGISTRO_TELEFONO_TTL_SEGUNDOS:
+        REGISTROS_TELEFONO_PENDIENTES.pop(chat_id, None)
+        return False
+    return True
+
+
+def _registrar_telefono_autorizado(
     db: Session,
-    contacto: TelegramContacto,
     telegram_user_id: int,
     chat_id: int,
     nombres: str | None,
     telefono: str,
-) -> tuple[str, str, TelegramContacto]:
-    existente = db.scalars(select(TelegramContacto).where(TelegramContacto.telefono == telefono)).first()
-    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_REGISTRO_TELEFONO)
+) -> tuple[str, str, TelegramContacto | None]:
+    REGISTROS_TELEFONO_PENDIENTES.pop(chat_id, None)
+    contacto = db.scalars(
+        select(TelegramContacto).where(
+            TelegramContacto.telefono == telefono,
+            TelegramContacto.activo.is_(True),
+        )
+    ).first()
+    if contacto is None:
+        return "ACCESO_NO_AUTORIZADO", MENSAJE_ACCESO_NO_AUTORIZADO, None
 
-    if existente and existente.id != contacto.id:
-        if existente.telegram_user_id != telegram_user_id:
-            if registro:
-                registro.estado = "COMPLETADA"
-                registro.fecha_respuesta = datetime.now(timezone.utc)
-                registro.respuesta = {"telefono": telefono, "estado": "YA_REGISTRADO_OTRA_CUENTA"}
-            db.commit()
-            return "TELEFONO_YA_REGISTRADO", "Este numero ya esta registrado con otra cuenta de Telegram.", contacto
-        contacto = existente
+    telegram_ocupado = (
+        not _valor_identidad_vacio(contacto.telegram_user_id)
+        and int(contacto.telegram_user_id) != telegram_user_id
+    )
+    chat_ocupado = not _valor_identidad_vacio(contacto.chat_id) and int(contacto.chat_id) != chat_id
+    if telegram_ocupado or chat_ocupado:
+        return "TELEFONO_YA_REGISTRADO", "Este numero ya esta registrado con otra cuenta de Telegram.", contacto
 
+    ya_registrado = int(contacto.telegram_user_id or 0) == telegram_user_id and int(contacto.chat_id or 0) == chat_id
     contacto.telegram_user_id = telegram_user_id
     contacto.chat_id = chat_id
     contacto.nombres = nombres or contacto.nombres
     contacto.activo = True
-    if contacto.telefono == telefono:
+    if ya_registrado:
         mensaje = "Este numero ya esta registrado para su cuenta."
         estado = "TELEFONO_YA_REGISTRADO"
     else:
-        contacto.telefono = telefono
         mensaje = "Registro guardado correctamente."
         estado = "REGISTRADO"
 
-    if registro:
-        registro.estado = "COMPLETADA"
-        registro.fecha_respuesta = datetime.now(timezone.utc)
-        registro.respuesta = {"telefono": telefono, "estado": estado}
     db.commit()
     return estado, mensaje, contacto
 
@@ -1190,12 +1182,14 @@ def _recibir_callback_menu_principal(
             detail="El callback no contiene message.chat.id.",
         )
 
-    contacto = _upsert_contacto_telegram(
-        db=db,
-        chat_id=int(chat_id),
-        telegram_user_id=int(telegram_user_id),
-        nombres=_nombre_desde_update(origen, chat),
-    )
+    contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+    if contacto is None:
+        _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+        return TelegramWebhookRespuesta(
+            estado="ACCESO_NO_AUTORIZADO",
+            mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+            chat_id=int(chat_id),
+        )
 
     if isinstance(data, str) and data.startswith(CALLBACK_TIPO_ALERTA_PREFIX):
         try:
@@ -1442,12 +1436,14 @@ def recibir_webhook_telegram(
     nombres = _nombre_desde_update(origen, chat)
 
     if _es_comando_scripts(texto):
-        contacto = _upsert_contacto_telegram(
-            db=db,
-            chat_id=int(chat_id),
-            telegram_user_id=int(telegram_user_id),
-            nombres=nombres,
-        )
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+        if contacto is None:
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
+            )
         if not _puede_ejecutar_scripts(int(telegram_user_id)):
             _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ejecutar scripts.")
             return TelegramWebhookRespuesta(
@@ -1467,12 +1463,14 @@ def recibir_webhook_telegram(
         )
 
     if _es_comando_reporte_lluvia(texto):
-        contacto = _upsert_contacto_telegram(
-            db=db,
-            chat_id=int(chat_id),
-            telegram_user_id=int(telegram_user_id),
-            nombres=nombres,
-        )
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+        if contacto is None:
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
+            )
         reporte = _obtener_reporte_lluvia(db)
         texto_reporte = _formatear_reporte_lluvia(reporte)
         _responder_si_es_posible(sender, int(chat_id), texto_reporte)
@@ -1484,19 +1482,21 @@ def recibir_webhook_telegram(
             chat_id=contacto.chat_id,
         )
 
-    contacto_auth_scripts = _contacto_por_chat_id(db, int(chat_id))
+    contacto_auth_scripts = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
     if contacto_auth_scripts and _puede_ejecutar_scripts(int(telegram_user_id)):
         respuesta_auth = _validar_passcode_scripts(db, contacto_auth_scripts, texto, sender)
         if respuesta_auth is not None:
             return respuesta_auth
 
     if _es_comando_reporte_lluvia_grafico(texto):
-        contacto = _upsert_contacto_telegram(
-            db=db,
-            chat_id=int(chat_id),
-            telegram_user_id=int(telegram_user_id),
-            nombres=nombres,
-        )
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+        if contacto is None:
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
+            )
         if sender is None:
             return TelegramWebhookRespuesta(
                 estado="TELEGRAM_NO_CONFIGURADO",
@@ -1520,12 +1520,14 @@ def recibir_webhook_telegram(
         )
 
     if _es_inicio_o_menu(texto):
-        contacto = _upsert_contacto_telegram(
-            db=db,
-            chat_id=int(chat_id),
-            telegram_user_id=int(telegram_user_id),
-            nombres=nombres,
-        )
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+        if contacto is None:
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
+            )
         _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
         return TelegramWebhookRespuesta(
             estado="MENU_PRINCIPAL",
@@ -1536,63 +1538,46 @@ def recibir_webhook_telegram(
         )
 
     if _es_comando_registro(texto):
-        contacto = _upsert_contacto_telegram(
-            db=db,
-            chat_id=int(chat_id),
-            telegram_user_id=int(telegram_user_id),
-            nombres=nombres,
-        )
-        _iniciar_registro_telefono(db, contacto, sender)
+        _iniciar_registro_telefono(int(chat_id), sender)
         return TelegramWebhookRespuesta(
             estado="ESPERANDO_TELEFONO",
             mensaje="Se solicito el telefono institucional.",
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
+            chat_id=int(chat_id),
         )
 
     if _es_opcion_reporte_barrido(texto):
-        contacto = _upsert_contacto_telegram(
-            db=db,
-            chat_id=int(chat_id),
-            telegram_user_id=int(telegram_user_id),
-            nombres=nombres,
-        )
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+        if contacto is None:
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
+            )
         return _seleccionar_reporte_barrido(db, contacto, sender)
 
     if _es_opcion_reporte_evento(texto):
-        contacto = _upsert_contacto_telegram(
-            db=db,
-            chat_id=int(chat_id),
-            telegram_user_id=int(telegram_user_id),
-            nombres=nombres,
-        )
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+        if contacto is None:
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
+            )
         return _seleccionar_reporte_evento(db, contacto, sender)
 
     foto = _extraer_foto_de_mensaje(message)
     if foto:
         media_group_id = message.get("media_group_id")
         media_group_id_texto = str(media_group_id) if media_group_id else None
-        contacto = _contacto_por_chat_id(db, int(chat_id))
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
         if contacto is None:
-            contacto = _upsert_contacto_telegram(
-                db=db,
-                chat_id=int(chat_id),
-                telegram_user_id=int(telegram_user_id),
-                nombres=nombres,
-            )
-        if not contacto.telefono:
-            _responder_si_es_posible(
-                sender,
-                int(chat_id),
-                "Primero registre su numero institucional con /registrar.",
-            )
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
             return TelegramWebhookRespuesta(
-                estado="TELEFONO_REQUERIDO",
-                mensaje="Se recibio foto, pero el contacto no tiene telefono registrado.",
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
             )
 
         registro_evento = _consulta_evento_activa_por_contacto(db, contacto.id)
@@ -1644,26 +1629,13 @@ def recibir_webhook_telegram(
 
     location = message.get("location")
     if isinstance(location, dict):
-        contacto = _contacto_por_chat_id(db, int(chat_id))
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
         if contacto is None:
-            contacto = _upsert_contacto_telegram(
-                db=db,
-                chat_id=int(chat_id),
-                telegram_user_id=int(telegram_user_id),
-                nombres=nombres,
-            )
-        if not contacto.telefono:
-            _responder_si_es_posible(
-                sender,
-                int(chat_id),
-                "Primero registre su numero institucional con /registrar.",
-            )
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
             return TelegramWebhookRespuesta(
-                estado="TELEFONO_REQUERIDO",
-                mensaje="Se recibio ubicacion, pero el contacto no tiene telefono registrado.",
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                chat_id=int(chat_id),
             )
 
         registro_evento = _consulta_evento_activa_por_contacto(db, contacto.id)
@@ -1743,7 +1715,7 @@ def recibir_webhook_telegram(
         )
 
     if texto:
-        contacto_evento = _contacto_por_chat_id(db, int(chat_id))
+        contacto_evento = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
         registro_evento = (
             _consulta_evento_activa_por_contacto(db, contacto_evento.id) if contacto_evento is not None else None
         )
@@ -1782,7 +1754,11 @@ def recibir_webhook_telegram(
                 chat_id=contacto_evento.chat_id,
             )
 
-        contacto_barrido = contacto_evento or _contacto_por_chat_id(db, int(chat_id))
+        contacto_barrido = contacto_evento or _contacto_autorizado_por_identidad(
+            db,
+            int(chat_id),
+            int(telegram_user_id),
+        )
         registro_barrido = (
             _consulta_barrido_activa_por_contacto(db, contacto_barrido.id) if contacto_barrido is not None else None
         )
@@ -1808,16 +1784,12 @@ def recibir_webhook_telegram(
 
     nivel = MAPA_NIVELES_LLUVIAS.get(texto.strip())
     if nivel:
-        contacto = _contacto_por_chat_id(db, int(chat_id))
+        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
         if contacto is None:
-            _responder_si_es_posible(
-                sender,
-                int(chat_id),
-                "Primero debe registrarse con /registrar.",
-            )
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
             return TelegramWebhookRespuesta(
-                estado="CONTACTO_NO_REGISTRADO",
-                mensaje="No existe contacto activo para este chat_id.",
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
                 chat_id=int(chat_id),
             )
 
@@ -1857,17 +1829,7 @@ def recibir_webhook_telegram(
 
     telefono = _extraer_telefono_de_mensaje(message, texto)
     if telefono:
-        contacto = _contacto_por_chat_id(db, int(chat_id))
-        if contacto is None:
-            contacto = _upsert_contacto_telegram(
-                db=db,
-                chat_id=int(chat_id),
-                telegram_user_id=int(telegram_user_id),
-                nombres=nombres,
-            )
-
-        registro_telefono = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_REGISTRO_TELEFONO)
-        if registro_telefono is None:
+        if not _registro_telefono_pendiente(int(chat_id)):
             _responder_si_es_posible(
                 sender,
                 int(chat_id),
@@ -1876,30 +1838,28 @@ def recibir_webhook_telegram(
             return TelegramWebhookRespuesta(
                 estado="REGISTRO_REQUERIDO",
                 mensaje="Se recibio telefono, pero no hay registro de telefono pendiente.",
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
+                chat_id=int(chat_id),
             )
 
-        estado, mensaje, contacto = _registrar_telefono_pendiente(
+        estado, mensaje, contacto = _registrar_telefono_autorizado(
             db=db,
-            contacto=contacto,
             telegram_user_id=int(telegram_user_id),
             chat_id=int(chat_id),
             nombres=nombres,
             telefono=telefono,
         )
         _responder_si_es_posible(sender, int(chat_id), mensaje)
-        _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
+        if contacto is not None and estado != "TELEFONO_YA_REGISTRADO":
+            _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
         return TelegramWebhookRespuesta(
             estado=estado,
             mensaje=mensaje,
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
+            contacto_id=contacto.id if contacto else None,
+            telefono=contacto.telefono if contacto else telefono,
+            chat_id=contacto.chat_id if contacto else int(chat_id),
         )
 
-    contacto = _contacto_por_chat_id(db, int(chat_id))
+    contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
     if contacto and contacto.telefono:
         _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
         return TelegramWebhookRespuesta(
@@ -1910,23 +1870,11 @@ def recibir_webhook_telegram(
             chat_id=contacto.chat_id,
         )
 
-    contacto = _upsert_contacto_telegram(
-        db=db,
-        chat_id=int(chat_id),
-        telegram_user_id=int(telegram_user_id),
-        nombres=nombres,
-    )
-    _responder_si_es_posible(
-        sender,
-        int(chat_id),
-        "No pude reconocer la opcion. Escriba hola para ver el menu o /registrar para registrar su numero.",
-    )
+    _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
     return TelegramWebhookRespuesta(
-        estado="OPCION_NO_RECONOCIDA",
-        mensaje="Mensaje recibido, pero no coincide con una opcion del bot.",
-        contacto_id=contacto.id,
-        telefono=contacto.telefono,
-        chat_id=contacto.chat_id,
+        estado="ACCESO_NO_AUTORIZADO",
+        mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+        chat_id=int(chat_id),
     )
 
 
