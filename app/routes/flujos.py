@@ -456,6 +456,41 @@ def _encuestas_alerta_activas(db: Session, tipo_alerta_id: int) -> list[AlertaEn
     )
 
 
+def _recomendaciones_alerta_activas(db: Session, tipo_alerta_id: int | None) -> list[AlertaRecomendacion]:
+    if tipo_alerta_id is None:
+        return []
+    return list(
+        db.scalars(
+            select(AlertaRecomendacion)
+            .where(
+                AlertaRecomendacion.tipo_alerta_id == tipo_alerta_id,
+                AlertaRecomendacion.activo.is_(True),
+            )
+            .order_by(AlertaRecomendacion.orden)
+        )
+    )
+
+
+def _mensaje_recomendaciones_alerta(db: Session, tipo_alerta_id: int | None) -> str | None:
+    recomendaciones = _recomendaciones_alerta_activas(db, tipo_alerta_id)
+    if not recomendaciones:
+        return None
+    lineas = ["Recomendaciones:"]
+    lineas.extend(f"- {recomendacion.recomendacion}" for recomendacion in recomendaciones)
+    return "\n".join(lineas)
+
+
+def _enviar_recomendaciones_alerta_si_es_posible(
+    db: Session,
+    sender: TelegramSender | None,
+    chat_id: int,
+    tipo_alerta_id: int | None,
+) -> None:
+    mensaje = _mensaje_recomendaciones_alerta(db, tipo_alerta_id)
+    if mensaje:
+        _responder_si_es_posible(sender, chat_id, mensaje)
+
+
 def _texto_opcion_encuesta_alerta(opcion: AlertaEncuesta) -> str:
     color = f"{opcion.color.strip()} " if opcion.color and opcion.color.strip() else ""
     descripcion = f": {opcion.descripcion}" if opcion.descripcion else ""
@@ -1983,6 +2018,12 @@ def recibir_webhook_telegram(
                 registro=registro_evento,
                 foto=foto,
                 media_group_id=media_group_id_texto,
+            )
+            _enviar_recomendaciones_alerta_si_es_posible(
+                db=db,
+                sender=sender,
+                chat_id=int(chat_id),
+                tipo_alerta_id=evento.tipo_alerta_id,
             )
             _responder_si_es_posible(
                 sender,

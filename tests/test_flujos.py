@@ -905,6 +905,12 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
         )
         assert foto.status_code == 200
         assert foto.json()["estado"] == "REPORTE_ALERTA_GUARDADO"
+        assert sender.messages[-2]["text"] == (
+            "Recomendaciones:\n"
+            "- Evitar transitar en zonas inundadas.\n"
+            "- No acercarse a postes, cables o arboles."
+        )
+        assert "Muchas gracias por tu reporte" in str(sender.messages[-1]["text"])
 
         evento = session.execute(
             text(
