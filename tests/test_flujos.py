@@ -95,6 +95,53 @@ def _asegurar_tabla_eventos(session: Session) -> None:
     )
 
 
+def _asegurar_tipo_alertas(session: Session) -> None:
+    session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS public.tipo_alertas
+            (
+                id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                descripcion varchar(150) NOT NULL,
+                activo boolean NOT NULL DEFAULT true,
+                fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
+                CONSTRAINT uq_tipo_alertas_descripcion UNIQUE (descripcion)
+            )
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO public.tipo_alertas (id, descripcion)
+            OVERRIDING SYSTEM VALUE
+            VALUES
+                (1, 'CA\u00cdDA DE CENIZA'),
+                (2, 'DERRUMBES'),
+                (3, 'ESTADO DE RIOS/QUEBRADAS'),
+                (4, 'SISMO'),
+                (5, 'INCENDIOS FORESTALES'),
+                (6, 'LLUVIAS'),
+                (7, 'OLEAJE')
+            ON CONFLICT (id) DO UPDATE
+            SET descripcion = EXCLUDED.descripcion,
+                activo = true
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('public.tipo_alertas', 'id'),
+                (SELECT max(id) FROM public.tipo_alertas),
+                true
+            )
+            """
+        )
+    )
+
+
 @contextmanager
 def _client_con_contacto() -> Generator[tuple[TestClient, str], None, None]:
     connection = engine.connect()
@@ -144,9 +191,43 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/barridos/respuestas" in paths
     assert "/api/telegram/barridos/reporte-lluvia" in paths
     assert "/api/telegram/barridos/reporte-lluvia/grafico/enviar" in paths
+    assert "/api/telegram/tipo-alertas" in paths
+    assert "/api/telegram/tipo-alertas/{tipo_alerta_id}" in paths
     assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
     assert "/api/telegram/eventos/seguimientos" in paths
+
+
+def test_endpoint_tipo_alertas_lista_catalogo() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+
+    try:
+        _asegurar_tipo_alertas(session)
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        client = TestClient(app)
+
+        respuesta = client.get("/api/telegram/tipo-alertas")
+
+        assert respuesta.status_code == 200
+        data = respuesta.json()
+        assert [item["id"] for item in data] == [1, 2, 3, 4, 5, 6, 7]
+        assert data[0]["descripcion"] == "CA\u00cdDA DE CENIZA"
+        assert data[5]["descripcion"] == "LLUVIAS"
+
+        detalle = client.get("/api/telegram/tipo-alertas/6")
+        assert detalle.status_code == 200
+        assert detalle.json()["descripcion"] == "LLUVIAS"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
 
 
 def test_flujo_boletin_barrido_y_seguimiento() -> None:
@@ -207,6 +288,8 @@ def test_webhook_registra_contacto_con_telefono() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        _asegurar_tipo_alertas(session)
+
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
@@ -383,6 +466,7 @@ def test_webhook_barrido_esperando_ubicacion_repite_instruccion_gps() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        _asegurar_tipo_alertas(session)
         session.execute(
             text(
                 """
@@ -481,6 +565,47 @@ def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
         assert respuesta.status_code == 200
         assert respuesta.json()["estado"] == "MENU_PRINCIPAL"
         assert respuesta.json()["telefono"] == telefono
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_selecciona_tipo_alerta_desde_menu() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_tipo_alertas(session)
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 120,
+                "callback_query": {
+                    "id": "callback-tipo-alerta",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "TIPO_ALERTA:6",
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "TIPO_ALERTA_SELECCIONADO"
+        assert respuesta.json()["mensaje"] == "Tipo de alerta seleccionado: LLUVIAS."
     finally:
         app.dependency_overrides.clear()
         session.close()

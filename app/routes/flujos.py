@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CatalogoNivelEvento, TelegramBarrido, TelegramConsulta, TelegramContacto, TelegramEvento
+from app.models import CatalogoNivelEvento, TelegramBarrido, TelegramConsulta, TelegramContacto, TelegramEvento, TipoAlerta
 from app.schemas import (
     BarridoGuardadoRespuesta,
     CrearBoletinRequest,
@@ -27,6 +27,7 @@ from app.schemas import (
     RegistroFlujoRespuesta,
     SolicitarBarridoRequest,
     TelegramWebhookRespuesta,
+    TipoAlertaRespuesta,
 )
 from app.telegram import TelegramDeliveryError, TelegramSender, get_optional_telegram_sender, get_telegram_sender
 
@@ -70,9 +71,13 @@ MENSAJE_UBICACION_BARRIDO_REQUERIDA = (
 MENSAJE_UBICACION_EVENTO_REQUERIDA = (
     "Aun falta compartir la ubicacion del evento. Active el GPS y use el boton Compartir ubicacion."
 )
-MENSAJE_MENU_PRINCIPAL = "Bienvenido. Seleccione una opcion:"
 OPCION_REPORTE_BARRIDO = "Reporte de barrido"
 OPCION_REPORTE_EVENTO = "Reporte de evento"
+MENSAJE_MENU_PRINCIPAL = (
+    "Por favor seleccione el tipo de alerta que desea enviar a los organismos de gesti\u00f3n de riesgos "
+    "y de primera respuesta:"
+)
+CALLBACK_TIPO_ALERTA_PREFIX = "TIPO_ALERTA:"
 ETIQUETAS_NIVELES_LLUVIA = {
     NivelLluvia.debil.value: "Debil",
     NivelLluvia.moderado.value: "Moderado",
@@ -156,6 +161,14 @@ def _respuesta_envio(codigo: str, registros: list[TelegramConsulta]) -> EnvioFlu
             )
             for registro in registros
         ],
+    )
+
+
+def _tipo_alerta_respuesta(tipo_alerta: TipoAlerta) -> TipoAlertaRespuesta:
+    return TipoAlertaRespuesta(
+        id=tipo_alerta.id,
+        descripcion=tipo_alerta.descripcion,
+        activo=tipo_alerta.activo,
     )
 
 
@@ -344,6 +357,16 @@ def _contacto_por_telegram_user_id(db: Session, telegram_user_id: int) -> Telegr
     ).first()
 
 
+def _tipos_alerta_activos(db: Session) -> list[TipoAlerta]:
+    return list(
+        db.scalars(
+            select(TipoAlerta)
+            .where(TipoAlerta.activo.is_(True))
+            .order_by(TipoAlerta.id)
+        )
+    )
+
+
 def _consulta_activa_por_contacto_y_tipo(
     db: Session,
     contacto_id: int,
@@ -364,11 +387,17 @@ def _consulta_evento_activa_por_contacto(db: Session, contacto_id: int) -> Teleg
     return _consulta_activa_por_contacto_y_tipo(db, contacto_id, TIPO_REPORTE_EVENTO)
 
 
-def _teclado_menu_principal() -> dict[str, Any]:
+def _teclado_menu_principal(db: Session) -> dict[str, Any]:
+    tipos_alerta = _tipos_alerta_activos(db)
     return {
         "inline_keyboard": [
-            [{"text": OPCION_REPORTE_BARRIDO, "callback_data": CALLBACK_REPORTE_BARRIDO}],
-            [{"text": OPCION_REPORTE_EVENTO, "callback_data": CALLBACK_REPORTE_EVENTO}],
+            [
+                {
+                    "text": tipo_alerta.descripcion,
+                    "callback_data": f"{CALLBACK_TIPO_ALERTA_PREFIX}{tipo_alerta.id}",
+                }
+            ]
+            for tipo_alerta in tipos_alerta
         ],
     }
 
@@ -384,12 +413,12 @@ def _teclado_menu_scripts() -> dict[str, Any]:
     }
 
 
-def _mostrar_menu_principal_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+def _mostrar_menu_principal_si_es_posible(db: Session, sender: TelegramSender | None, chat_id: int) -> None:
     _responder_si_es_posible(
         sender,
         chat_id,
         MENSAJE_MENU_PRINCIPAL,
-        reply_markup=_teclado_menu_principal(),
+        reply_markup=_teclado_menu_principal(db),
     )
 
 
@@ -1136,6 +1165,31 @@ def _recibir_callback_menu_principal(
         nombres=_nombre_desde_update(origen, chat),
     )
 
+    if isinstance(data, str) and data.startswith(CALLBACK_TIPO_ALERTA_PREFIX):
+        try:
+            tipo_alerta_id = int(data.removeprefix(CALLBACK_TIPO_ALERTA_PREFIX))
+        except ValueError:
+            tipo_alerta_id = 0
+        tipo_alerta = db.get(TipoAlerta, tipo_alerta_id)
+        if tipo_alerta is None or not tipo_alerta.activo:
+            _responder_si_es_posible(sender, int(chat_id), "El tipo de alerta seleccionado no esta disponible.")
+            return TelegramWebhookRespuesta(
+                estado="TIPO_ALERTA_NO_DISPONIBLE",
+                mensaje="El tipo de alerta seleccionado no existe o no esta activo.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        mensaje = f"Tipo de alerta seleccionado: {tipo_alerta.descripcion}."
+        _responder_si_es_posible(sender, int(chat_id), mensaje)
+        return TelegramWebhookRespuesta(
+            estado="TIPO_ALERTA_SELECCIONADO",
+            mensaje=mensaje,
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
     if str(data).startswith("SCRIPT_") and not _puede_ejecutar_scripts(int(telegram_user_id)):
         _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ejecutar scripts.")
         return TelegramWebhookRespuesta(
@@ -1177,7 +1231,7 @@ def _recibir_callback_menu_principal(
             chat_id=contacto.chat_id,
         )
 
-    _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+    _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
     return TelegramWebhookRespuesta(
         estado="CALLBACK_IGNORADO",
         mensaje="Callback recibido, pero no coincide con una opcion del menu.",
@@ -1185,6 +1239,48 @@ def _recibir_callback_menu_principal(
         telefono=contacto.telefono,
         chat_id=contacto.chat_id,
     )
+
+
+@router.get(
+    "/tipo-alertas",
+    response_model=list[TipoAlertaRespuesta],
+    tags=["tipo alertas"],
+    summary="Listar tipos de alerta",
+)
+def listar_tipo_alertas(
+    activo: bool | None = True,
+    db: Session = Depends(get_db),
+) -> list[TipoAlertaRespuesta]:
+    filtros = []
+    if activo is not None:
+        filtros.append(TipoAlerta.activo.is_(activo))
+    tipos_alerta = list(
+        db.scalars(
+            select(TipoAlerta)
+            .where(*filtros)
+            .order_by(TipoAlerta.id)
+        )
+    )
+    return [_tipo_alerta_respuesta(tipo_alerta) for tipo_alerta in tipos_alerta]
+
+
+@router.get(
+    "/tipo-alertas/{tipo_alerta_id}",
+    response_model=TipoAlertaRespuesta,
+    tags=["tipo alertas"],
+    summary="Obtener tipo de alerta por id",
+)
+def obtener_tipo_alerta(
+    tipo_alerta_id: int,
+    db: Session = Depends(get_db),
+) -> TipoAlertaRespuesta:
+    tipo_alerta = db.get(TipoAlerta, tipo_alerta_id)
+    if tipo_alerta is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tipo de alerta no encontrado.",
+        )
+    return _tipo_alerta_respuesta(tipo_alerta)
 
 
 @router.post(
@@ -1308,7 +1404,7 @@ def recibir_webhook_telegram(
             telegram_user_id=int(telegram_user_id),
             nombres=nombres,
         )
-        _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+        _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
         return TelegramWebhookRespuesta(
             estado="MENU_PRINCIPAL",
             mensaje="Contacto inicial registrado. Se mostro el menu principal.",
@@ -1399,7 +1495,7 @@ def recibir_webhook_telegram(
                 int(chat_id),
                 "Primero seleccione Reporte de evento en el menu.",
             )
-            _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+            _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
             return TelegramWebhookRespuesta(
                 estado="FLUJO_REQUERIDO",
                 mensaje="Se recibio foto, pero no hay reporte de evento esperando foto.",
@@ -1495,7 +1591,7 @@ def recibir_webhook_telegram(
                 int(chat_id),
                 "Primero seleccione Reporte de barrido en el menu.",
             )
-            _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+            _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
             return TelegramWebhookRespuesta(
                 estado="FLUJO_REQUERIDO",
                 mensaje="Se recibio ubicacion, pero no hay reporte de barrido activo.",
@@ -1672,7 +1768,7 @@ def recibir_webhook_telegram(
             telefono=telefono,
         )
         _responder_si_es_posible(sender, int(chat_id), mensaje)
-        _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+        _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
         return TelegramWebhookRespuesta(
             estado=estado,
             mensaje=mensaje,
@@ -1683,7 +1779,7 @@ def recibir_webhook_telegram(
 
     contacto = _contacto_por_chat_id(db, int(chat_id))
     if contacto and contacto.telefono:
-        _mostrar_menu_principal_si_es_posible(sender, int(chat_id))
+        _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
         return TelegramWebhookRespuesta(
             estado="MENU_PRINCIPAL",
             mensaje="Contacto registrado. Se mostro el menu principal.",

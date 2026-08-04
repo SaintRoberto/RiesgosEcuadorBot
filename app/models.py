@@ -40,6 +40,19 @@ class CatalogoNivelEvento(Base):
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
 
 
+class TipoAlerta(Base):
+    __tablename__ = "tipo_alertas"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    descripcion: Mapped[str] = mapped_column(String(150), nullable=False, unique=True)
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    fecha_creacion: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class TelegramBarrido(Base):
     __tablename__ = "telegram_barridos"
 

@@ -73,6 +73,12 @@ class CrearSeguimientoEventoRequest(BaseModel):
     usuario_id: int | None = None
 
 
+class TipoAlertaRespuesta(BaseModel):
+    id: int
+    descripcion: str
+    activo: bool
+
+
 class RegistroFlujoRespuesta(BaseModel):
     id: int
     telefono: str | None
