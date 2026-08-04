@@ -13,6 +13,11 @@ from app.telegram import get_optional_telegram_sender, get_telegram_sender
 
 
 class FakeTelegramSender:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+        self.polls: list[dict[str, object]] = []
+        self.photos: list[dict[str, object]] = []
+
     def send_message(
         self,
         chat_id: int,
@@ -22,26 +27,31 @@ class FakeTelegramSender:
         result = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             result["reply_markup"] = reply_markup
+        self.messages.append(result)
         return {"ok": True, "result": result}
 
     def send_poll(self, chat_id: int, question: str, options: list[str]) -> dict[str, object]:
+        result = {
+            "chat_id": chat_id,
+            "poll": {
+                "question": question,
+                "options": [{"text": option} for option in options],
+                "is_anonymous": False,
+            },
+        }
+        self.polls.append(result)
         return {
             "ok": True,
-            "result": {
-                "chat_id": chat_id,
-                "poll": {
-                    "question": question,
-                    "options": [{"text": option} for option in options],
-                    "is_anonymous": False,
-                },
-            },
+            "result": result,
         }
 
     def answer_callback_query(self, callback_query_id: str) -> dict[str, object]:
         return {"ok": True, "result": True, "callback_query_id": callback_query_id}
 
     def send_photo(self, chat_id: int, photo: str, caption: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {"chat_id": chat_id, "photo": photo, "caption": caption}}
+        result = {"chat_id": chat_id, "photo": photo, "caption": caption}
+        self.photos.append(result)
+        return {"ok": True, "result": result}
 
     def get_file(self, file_id: str) -> dict[str, object]:
         return {"ok": True, "result": {"file_id": file_id, "file_path": "photos/evento-test.jpg"}}
@@ -546,8 +556,9 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
+        sender = FakeTelegramSender()
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
         client = TestClient(app)
 
         seleccion = client.post(
@@ -629,19 +640,20 @@ def test_webhook_barrido_esperando_ubicacion_repite_instruccion_gps() -> None:
             text(
                 """
                 INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
+                    (telegram_user_id, chat_id, telefono, nombres, activo)
                 VALUES
-                    (:telegram_user_id, :chat_id, :telefono, true)
+                    (:telegram_user_id, :chat_id, :telefono, :nombres, true)
                 """
             ),
-            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono, "nombres": "GAD"},
         )
 
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
+        sender = FakeTelegramSender()
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
         client = TestClient(app)
 
         seleccion = client.post(
@@ -704,8 +716,9 @@ def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
+        sender = FakeTelegramSender()
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
         client = TestClient(app)
 
         respuesta = client.post(
@@ -723,6 +736,10 @@ def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
         assert respuesta.status_code == 200
         assert respuesta.json()["estado"] == "MENU_PRINCIPAL"
         assert respuesta.json()["telefono"] == telefono
+        assert sender.messages[-1]["text"] == (
+            "Hola GAD. Por favor seleccione el tipo de alerta que desea enviar a los organismos de "
+            "gesti\u00f3n de riesgos y de primera respuesta:"
+        )
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -730,35 +747,37 @@ def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
         connection.close()
 
 
-def test_webhook_selecciona_tipo_alerta_desde_menu() -> None:
+def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
     chat_id = -(uuid4().int % 1000000000)
 
     try:
-        _asegurar_tipo_alertas(session)
+        _asegurar_catalogos_alertas(session)
+        _asegurar_tabla_eventos(session)
         telefono = f"+593020{uuid4().int % 1000000:06d}"
         session.execute(
             text(
                 """
                 INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
+                    (telegram_user_id, chat_id, telefono, nombres, activo)
                 VALUES
-                    (:telegram_user_id, :chat_id, :telefono, true)
+                    (:telegram_user_id, :chat_id, :telefono, :nombres, true)
                 """
             ),
-            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono, "nombres": "GAD"},
         )
 
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
+        sender = FakeTelegramSender()
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
         client = TestClient(app)
 
-        respuesta = client.post(
+        seleccion = client.post(
             "/api/telegram/webhook",
             json={
                 "update_id": 120,
@@ -773,9 +792,114 @@ def test_webhook_selecciona_tipo_alerta_desde_menu() -> None:
             },
         )
 
-        assert respuesta.status_code == 200
-        assert respuesta.json()["estado"] == "TIPO_ALERTA_SELECCIONADO"
-        assert respuesta.json()["mensaje"] == "Tipo de alerta seleccionado: LLUVIAS."
+        assert seleccion.status_code == 200
+        assert seleccion.json()["estado"] == "REPORTE_ALERTA_ENCUESTA_ENVIADA"
+        assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
+        assert sender.polls[-1]["poll"]["options"][0]["text"].startswith("\U0001f534 LLUVIA MUY FUERTE")
+
+        encuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 121,
+                "poll_answer": {
+                    "poll_id": "poll-alerta",
+                    "user": {"id": chat_id, "first_name": "GAD"},
+                    "option_ids": [1],
+                },
+            },
+        )
+        assert encuesta.status_code == 200
+        assert encuesta.json()["estado"] == "ALERTA_NIVEL_RECIBIDO"
+
+        ubicacion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 122,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "location": {"latitude": -0.1806532, "longitude": -78.4678382},
+                },
+            },
+        )
+        assert ubicacion.status_code == 200
+        assert ubicacion.json()["estado"] == "ALERTA_UBICACION_RECIBIDA"
+
+        descripcion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 123,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "Comunidad San Jose, lluvia fuerte con acumulacion de agua.",
+                },
+            },
+        )
+        assert descripcion.status_code == 200
+        assert descripcion.json()["estado"] == "ALERTA_DESCRIPCION_RECIBIDA"
+
+        riesgo = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 124,
+                "callback_query": {
+                    "id": "callback-riesgo",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {"chat": {"id": chat_id, "first_name": "GAD", "type": "private"}},
+                    "data": "ALERTA_RIESGO:SI",
+                },
+            },
+        )
+        assert riesgo.status_code == 200
+        assert riesgo.json()["estado"] == "ALERTA_RIESGO_PERSONAS_CONFIRMADO"
+
+        cantidad = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 125,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "25",
+                },
+            },
+        )
+        assert cantidad.status_code == 200
+        assert cantidad.json()["estado"] == "ALERTA_CANTIDAD_PERSONAS_RECIBIDA"
+
+        foto = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 126,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "photo": [
+                        {"file_id": "foto-small", "file_unique_id": "unique-small", "width": 10, "height": 10},
+                        {"file_id": "foto-big", "file_unique_id": "unique-big", "width": 100, "height": 100},
+                    ],
+                },
+            },
+        )
+        assert foto.status_code == 200
+        assert foto.json()["estado"] == "REPORTE_ALERTA_GUARDADO"
+
+        evento = session.execute(
+            text(
+                """
+                SELECT descripcion, foto_file_id, foto_file_unique_id
+                FROM telegram_eventos
+                WHERE contacto_id = :contacto_id
+                """
+            ),
+            {"contacto_id": foto.json()["contacto_id"]},
+        ).mappings().one()
+        assert "Tipo de alerta: LLUVIAS" in evento["descripcion"]
+        assert "Nivel: LLUVIA FUERTE" in evento["descripcion"]
+        assert "Cantidad aproximada de personas en riesgo: 25" in evento["descripcion"]
+        assert evento["foto_file_id"] == "foto-big"
+        assert evento["foto_file_unique_id"] == "unique-big"
     finally:
         app.dependency_overrides.clear()
         session.close()

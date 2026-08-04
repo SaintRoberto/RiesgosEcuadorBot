@@ -52,11 +52,19 @@ TIPO_REPORTE_EVENTO = "REPORTE_EVENTO"
 TIPO_SCRIPT_AUTH = "SCRIPT_AUTH"
 FLUJO_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 FLUJO_REPORTE_EVENTO = "REPORTE_EVENTO"
+FLUJO_REPORTE_ALERTA = "REPORTE_ALERTA"
 PASO_EVENTO_FOTO = "ESPERANDO_FOTO"
 PASO_EVENTO_DESCRIPCION = "ESPERANDO_DESCRIPCION"
 PASO_EVENTO_UBICACION = "ESPERANDO_UBICACION"
+PASO_ALERTA_ENCUESTA = "ESPERANDO_ENCUESTA_ALERTA"
+PASO_ALERTA_UBICACION = "ESPERANDO_UBICACION_ALERTA"
+PASO_ALERTA_DESCRIPCION = "ESPERANDO_DESCRIPCION_ALERTA"
+PASO_ALERTA_RIESGO_PERSONAS = "ESPERANDO_RIESGO_PERSONAS"
+PASO_ALERTA_CANTIDAD_PERSONAS = "ESPERANDO_CANTIDAD_PERSONAS"
+PASO_ALERTA_FOTO = "ESPERANDO_FOTO_ALERTA"
 PATRON_TELEFONO = re.compile(r"^\+?\d{8,15}$")
 PATRON_TELEFONO_EN_TEXTO = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+PATRON_CANTIDAD_PERSONAS = re.compile(r"^\d{1,6}$")
 OPCIONES_ENCUESTA_LLUVIA = ["Debil", "Moderado", "Fuerte", "Muy fuerte"]
 MAPA_OPCIONES_ENCUESTA_LLUVIA = {
     0: NivelLluvia.debil,
@@ -93,6 +101,8 @@ MENSAJE_ACCESO_NO_AUTORIZADO = (
     "\u00a1\u00a1Saludos cordiales!!"
 )
 CALLBACK_TIPO_ALERTA_PREFIX = "TIPO_ALERTA:"
+CALLBACK_ALERTA_RIESGO_SI = "ALERTA_RIESGO:SI"
+CALLBACK_ALERTA_RIESGO_NO = "ALERTA_RIESGO:NO"
 ETIQUETAS_NIVELES_LLUVIA = {
     NivelLluvia.debil.value: "Debil",
     NivelLluvia.moderado.value: "Moderado",
@@ -125,6 +135,7 @@ MEDIA_TYPE_POR_EXTENSION = {
 }
 REGISTROS_TELEFONO_PENDIENTES: dict[int, datetime] = {}
 REGISTRO_TELEFONO_TTL_SEGUNDOS = 600
+COLORES_ENCUESTA_ALERTA = ["🔴", "🟡", "🟢", "🟠", "🔵", "🟣", "⚪", "⚫"]
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
@@ -432,6 +443,25 @@ def _teclado_menu_principal(db: Session) -> dict[str, Any]:
     }
 
 
+def _encuestas_alerta_activas(db: Session, tipo_alerta_id: int) -> list[AlertaEncuesta]:
+    return list(
+        db.scalars(
+            select(AlertaEncuesta)
+            .where(
+                AlertaEncuesta.tipo_alerta_id == tipo_alerta_id,
+                AlertaEncuesta.activo.is_(True),
+            )
+            .order_by(AlertaEncuesta.orden)
+        )
+    )
+
+
+def _texto_opcion_encuesta_alerta(opcion: AlertaEncuesta, indice: int) -> str:
+    color = COLORES_ENCUESTA_ALERTA[indice % len(COLORES_ENCUESTA_ALERTA)]
+    descripcion = f": {opcion.descripcion}" if opcion.descripcion else ""
+    return f"{color} {opcion.nombre}{descripcion}"
+
+
 def _teclado_menu_scripts() -> dict[str, Any]:
     return {
         "inline_keyboard": [
@@ -443,11 +473,34 @@ def _teclado_menu_scripts() -> dict[str, Any]:
     }
 
 
-def _mostrar_menu_principal_si_es_posible(db: Session, sender: TelegramSender | None, chat_id: int) -> None:
+def _teclado_riesgo_personas() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Si, hay personas en riesgo", "callback_data": CALLBACK_ALERTA_RIESGO_SI}],
+            [{"text": "No existe riesgo para personas", "callback_data": CALLBACK_ALERTA_RIESGO_NO}],
+        ],
+    }
+
+
+def _nombre_usuario(contacto: TelegramContacto) -> str:
+    return (contacto.nombres or "").strip() or "usuario"
+
+
+def _mensaje_menu_principal(contacto: TelegramContacto, nombre_update: str | None = None) -> str:
+    nombre = (contacto.nombres or nombre_update or "").strip() or "usuario"
+    return f"Hola {nombre}. {MENSAJE_MENU_PRINCIPAL}"
+
+
+def _mostrar_menu_principal_si_es_posible(
+    db: Session,
+    sender: TelegramSender | None,
+    contacto: TelegramContacto,
+    nombre_update: str | None = None,
+) -> None:
     _responder_si_es_posible(
         sender,
-        chat_id,
-        MENSAJE_MENU_PRINCIPAL,
+        contacto.chat_id,
+        _mensaje_menu_principal(contacto, nombre_update),
         reply_markup=_teclado_menu_principal(db),
     )
 
@@ -1018,6 +1071,190 @@ def _guardar_reporte_evento(
     return registro, evento
 
 
+def _enviar_encuesta_alerta_si_es_posible(
+    db: Session,
+    sender: TelegramSender | None,
+    chat_id: int,
+    tipo_alerta_id: int,
+) -> None:
+    opciones = _encuestas_alerta_activas(db, tipo_alerta_id)
+    if not opciones:
+        _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para este tipo de alerta.")
+        return
+    textos = [_texto_opcion_encuesta_alerta(opcion, indice) for indice, opcion in enumerate(opciones)]
+    if sender is None:
+        return
+    try:
+        sender.send_poll(
+            chat_id=chat_id,
+            question="Ingrese el NIVEL de alerta que usted visualiza:",
+            options=textos,
+        )
+    except TelegramDeliveryError:
+        lineas = ["Ingrese el NIVEL de alerta que usted visualiza:"]
+        lineas.extend(f"{indice + 1}) {texto}" for indice, texto in enumerate(textos))
+        _responder_si_es_posible(sender, chat_id, "\n".join(lineas))
+
+
+def _iniciar_reporte_alerta(
+    db: Session,
+    contacto: TelegramContacto,
+    tipo_alerta: TipoAlerta,
+    sender: TelegramSender | None,
+) -> None:
+    registro = _consulta_evento_activa_por_contacto(db, contacto.id)
+    parametros_base = {
+        "canal": "TELEGRAM",
+        "flujo": FLUJO_REPORTE_ALERTA,
+        "paso": PASO_ALERTA_ENCUESTA,
+        "telefono": contacto.telefono,
+        "tipo_alerta": {
+            "id": tipo_alerta.id,
+            "descripcion": tipo_alerta.descripcion,
+        },
+    }
+    if registro is None:
+        registro = TelegramConsulta(
+            contacto_id=contacto.id,
+            usuario_id=contacto.usuario_id,
+            tipo_consulta=TIPO_REPORTE_EVENTO,
+            consulta="Reporte de alerta iniciado desde Telegram",
+            parametros=parametros_base,
+            estado="PROCESANDO",
+        )
+        db.add(registro)
+    else:
+        registro.parametros = parametros_base
+        registro.respuesta = None
+        registro.mensaje_error = None
+        registro.estado = "PROCESANDO"
+    db.commit()
+    _enviar_encuesta_alerta_si_es_posible(db, sender, contacto.chat_id, tipo_alerta.id)
+
+
+def _guardar_encuesta_alerta(db: Session, registro: TelegramConsulta, opcion: AlertaEncuesta) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["encuesta"] = {
+        "id": opcion.id,
+        "nombre": opcion.nombre,
+        "descripcion": opcion.descripcion,
+        "orden": opcion.orden,
+    }
+    parametros["paso"] = PASO_ALERTA_UBICACION
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_ubicacion_alerta(db: Session, registro: TelegramConsulta, latitud: float, longitud: float) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["ubicacion"] = {"latitud": latitud, "longitud": longitud}
+    parametros["paso"] = PASO_ALERTA_DESCRIPCION
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_descripcion_alerta(db: Session, registro: TelegramConsulta, descripcion: str) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["descripcion"] = descripcion
+    parametros["paso"] = PASO_ALERTA_RIESGO_PERSONAS
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_riesgo_personas_alerta(
+    db: Session,
+    registro: TelegramConsulta,
+    hay_personas_en_riesgo: bool,
+) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["personas_en_riesgo"] = hay_personas_en_riesgo
+    if hay_personas_en_riesgo:
+        parametros["paso"] = PASO_ALERTA_CANTIDAD_PERSONAS
+    else:
+        parametros["cantidad_personas_riesgo"] = 0
+        parametros["paso"] = PASO_ALERTA_FOTO
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_cantidad_personas_alerta(db: Session, registro: TelegramConsulta, cantidad: int) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["cantidad_personas_riesgo"] = cantidad
+    parametros["paso"] = PASO_ALERTA_FOTO
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _descripcion_evento_desde_alerta(parametros: dict[str, Any]) -> str:
+    tipo_alerta = parametros.get("tipo_alerta") or {}
+    encuesta = parametros.get("encuesta") or {}
+    ubicacion = parametros.get("ubicacion") or {}
+    lineas = [
+        f"Tipo de alerta: {tipo_alerta.get('descripcion')}",
+        f"Nivel: {encuesta.get('nombre')}",
+    ]
+    if encuesta.get("descripcion"):
+        lineas.append(f"Detalle del nivel: {encuesta['descripcion']}")
+    lineas.extend(
+        [
+            f"Ubicacion: {ubicacion.get('latitud')}, {ubicacion.get('longitud')}",
+            f"Descripcion: {parametros.get('descripcion')}",
+            f"Personas en riesgo: {'Si' if parametros.get('personas_en_riesgo') else 'No'}",
+            f"Cantidad aproximada de personas en riesgo: {parametros.get('cantidad_personas_riesgo', 0)}",
+        ]
+    )
+    return "\n".join(lineas)
+
+
+def _guardar_foto_y_finalizar_alerta(
+    db: Session,
+    contacto: TelegramContacto,
+    registro: TelegramConsulta,
+    foto: dict[str, Any],
+    media_group_id: str | None = None,
+) -> tuple[TelegramConsulta, TelegramEvento]:
+    parametros = dict(registro.parametros or {})
+    ubicacion = parametros.get("ubicacion") or {}
+    if "latitud" not in ubicacion or "longitud" not in ubicacion:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El reporte de alerta no tiene ubicacion completa.",
+        )
+    parametros["foto"] = {
+        "file_id": str(foto["file_id"]),
+        "file_unique_id": foto.get("file_unique_id"),
+    }
+    if media_group_id:
+        parametros["media_group_id"] = media_group_id
+    parametros["paso"] = "COMPLETADO"
+
+    evento = TelegramEvento(
+        contacto_id=contacto.id,
+        descripcion=_descripcion_evento_desde_alerta(parametros),
+        foto_file_id=str(foto["file_id"]),
+        foto_file_unique_id=foto.get("file_unique_id"),
+        latitud=Decimal(str(ubicacion["latitud"])),
+        longitud=Decimal(str(ubicacion["longitud"])),
+    )
+    db.add(evento)
+    registro.parametros = parametros
+    registro.respuesta = parametros | {"evento_id": None}
+    registro.estado = "COMPLETADA"
+    registro.fecha_respuesta = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(registro)
+    db.refresh(evento)
+    registro.respuesta = dict(registro.respuesta or {}) | {"evento_id": evento.id}
+    db.commit()
+    db.refresh(registro)
+    return registro, evento
+
+
 def _seleccionar_reporte_barrido(
     db: Session,
     contacto: TelegramContacto,
@@ -1163,6 +1400,120 @@ def _recibir_respuesta_encuesta_lluvia(
     )
 
 
+def _recibir_respuesta_encuesta_alerta(
+    poll_answer: dict[str, Any],
+    db: Session,
+    sender: TelegramSender | None,
+) -> TelegramWebhookRespuesta | None:
+    user = poll_answer.get("user") or {}
+    telegram_user_id = user.get("id")
+    if telegram_user_id is None:
+        return None
+
+    contacto = _contacto_por_telegram_user_id(db, int(telegram_user_id))
+    if contacto is None:
+        return TelegramWebhookRespuesta(
+            estado="ACCESO_NO_AUTORIZADO",
+            mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+        )
+
+    registro = _consulta_evento_activa_por_contacto(db, contacto.id)
+    parametros = dict(registro.parametros or {}) if registro else {}
+    if parametros.get("flujo") != FLUJO_REPORTE_ALERTA:
+        return None
+    if parametros.get("paso") != PASO_ALERTA_ENCUESTA:
+        return TelegramWebhookRespuesta(
+            estado="ENCUESTA_ALERTA_IGNORADA",
+            mensaje="El nivel de alerta ya fue seleccionado.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    option_ids = poll_answer.get("option_ids")
+    if not isinstance(option_ids, list) or not option_ids:
+        return TelegramWebhookRespuesta(
+            estado="ENCUESTA_ALERTA_IGNORADA",
+            mensaje="La respuesta de encuesta no contiene una opcion valida.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+    try:
+        option_id = int(option_ids[0])
+    except (TypeError, ValueError):
+        option_id = -1
+
+    tipo_alerta = parametros.get("tipo_alerta") or {}
+    opciones = _encuestas_alerta_activas(db, int(tipo_alerta.get("id") or 0))
+    if option_id < 0 or option_id >= len(opciones):
+        return TelegramWebhookRespuesta(
+            estado="ENCUESTA_ALERTA_IGNORADA",
+            mensaje="La opcion seleccionada no existe para este tipo de alerta.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    _guardar_encuesta_alerta(db, registro, opciones[option_id])
+    _responder_si_es_posible(
+        sender,
+        contacto.chat_id,
+        f"Por favor {_nombre_usuario(contacto)}, ayudame enviando tu ubicacion actual que es donde se esta desarrollando esta alerta:",
+        reply_markup=_teclado_solicitar_ubicacion(),
+    )
+    return TelegramWebhookRespuesta(
+        estado="ALERTA_NIVEL_RECIBIDO",
+        mensaje="Nivel de alerta guardado temporalmente.",
+        contacto_id=contacto.id,
+        telefono=contacto.telefono,
+        chat_id=contacto.chat_id,
+    )
+
+
+def _recibir_riesgo_personas_alerta(
+    db: Session,
+    contacto: TelegramContacto,
+    sender: TelegramSender | None,
+    hay_personas_en_riesgo: bool,
+) -> TelegramWebhookRespuesta:
+    registro = _consulta_evento_activa_por_contacto(db, contacto.id)
+    parametros = dict(registro.parametros or {}) if registro else {}
+    if registro is None or parametros.get("flujo") != FLUJO_REPORTE_ALERTA:
+        _responder_si_es_posible(sender, contacto.chat_id, "No existe un reporte de alerta en proceso.")
+        return TelegramWebhookRespuesta(
+            estado="REPORTE_ALERTA_NO_ACTIVO",
+            mensaje="No existe un reporte de alerta en proceso.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+    if parametros.get("paso") != PASO_ALERTA_RIESGO_PERSONAS:
+        return TelegramWebhookRespuesta(
+            estado="RIESGO_PERSONAS_IGNORADO",
+            mensaje="La respuesta de personas en riesgo no corresponde al paso actual.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    _guardar_riesgo_personas_alerta(db, registro, hay_personas_en_riesgo)
+    if hay_personas_en_riesgo:
+        mensaje = "Aproximadamente, ¿cuantas personas estan en riesgo?"
+        estado = "ALERTA_RIESGO_PERSONAS_CONFIRMADO"
+    else:
+        mensaje = "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+        estado = "ALERTA_RIESGO_PERSONAS_DESCARTADO"
+    _responder_si_es_posible(sender, contacto.chat_id, mensaje)
+    return TelegramWebhookRespuesta(
+        estado=estado,
+        mensaje=mensaje,
+        contacto_id=contacto.id,
+        telefono=contacto.telefono,
+        chat_id=contacto.chat_id,
+    )
+
+
 def _recibir_callback_menu_principal(
     callback_query: dict[str, Any],
     db: Session,
@@ -1173,6 +1524,7 @@ def _recibir_callback_menu_principal(
     origen = callback_query.get("from") or {}
     message = callback_query.get("message") or {}
     chat = message.get("chat") or {}
+    nombre_update = _nombre_desde_update(origen, chat)
     data = callback_query.get("data")
     chat_id = chat.get("id")
     telegram_user_id = origen.get("id") or chat_id
@@ -1191,6 +1543,14 @@ def _recibir_callback_menu_principal(
             chat_id=int(chat_id),
         )
 
+    if data in {CALLBACK_ALERTA_RIESGO_SI, CALLBACK_ALERTA_RIESGO_NO}:
+        return _recibir_riesgo_personas_alerta(
+            db=db,
+            contacto=contacto,
+            sender=sender,
+            hay_personas_en_riesgo=data == CALLBACK_ALERTA_RIESGO_SI,
+        )
+
     if isinstance(data, str) and data.startswith(CALLBACK_TIPO_ALERTA_PREFIX):
         try:
             tipo_alerta_id = int(data.removeprefix(CALLBACK_TIPO_ALERTA_PREFIX))
@@ -1206,11 +1566,20 @@ def _recibir_callback_menu_principal(
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
-        mensaje = f"Tipo de alerta seleccionado: {tipo_alerta.descripcion}."
-        _responder_si_es_posible(sender, int(chat_id), mensaje)
+        if not _encuestas_alerta_activas(db, tipo_alerta.id):
+            mensaje = "No existen niveles configurados para este tipo de alerta."
+            _responder_si_es_posible(sender, int(chat_id), mensaje)
+            return TelegramWebhookRespuesta(
+                estado="ALERTA_ENCUESTA_NO_CONFIGURADA",
+                mensaje=mensaje,
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        _iniciar_reporte_alerta(db, contacto, tipo_alerta, sender)
         return TelegramWebhookRespuesta(
-            estado="TIPO_ALERTA_SELECCIONADO",
-            mensaje=mensaje,
+            estado="REPORTE_ALERTA_ENCUESTA_ENVIADA",
+            mensaje=f"Se envio la encuesta para {tipo_alerta.descripcion}.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -1257,7 +1626,7 @@ def _recibir_callback_menu_principal(
             chat_id=contacto.chat_id,
         )
 
-    _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
+    _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombre_update)
     return TelegramWebhookRespuesta(
         estado="CALLBACK_IGNORADO",
         mensaje="Callback recibido, pero no coincide con una opcion del menu.",
@@ -1412,6 +1781,9 @@ def recibir_webhook_telegram(
 ) -> TelegramWebhookRespuesta:
     poll_answer = update.get("poll_answer")
     if isinstance(poll_answer, dict):
+        respuesta_alerta = _recibir_respuesta_encuesta_alerta(poll_answer, db, sender)
+        if respuesta_alerta is not None:
+            return respuesta_alerta
         return _recibir_respuesta_encuesta_lluvia(poll_answer, db, sender)
 
     callback_query = update.get("callback_query")
@@ -1528,7 +1900,7 @@ def recibir_webhook_telegram(
                 mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
                 chat_id=int(chat_id),
             )
-        _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
+        _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
         return TelegramWebhookRespuesta(
             estado="MENU_PRINCIPAL",
             mensaje="Contacto inicial registrado. Se mostro el menu principal.",
@@ -1585,6 +1957,33 @@ def recibir_webhook_telegram(
         parametros_evento = dict(registro_evento.parametros or {}) if registro_evento else {}
         if (
             registro_evento is not None
+            and parametros_evento.get("flujo") == FLUJO_REPORTE_ALERTA
+            and paso_evento == PASO_ALERTA_FOTO
+        ):
+            registro_evento, evento = _guardar_foto_y_finalizar_alerta(
+                db=db,
+                contacto=contacto,
+                registro=registro_evento,
+                foto=foto,
+                media_group_id=media_group_id_texto,
+            )
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                (
+                    f"¡Muchas gracias por tu reporte, {_nombre_usuario(contacto)}!, la SNGR agradece tu aporte "
+                    "para actuar oportunamente. Si conoces de otra alerta, no dudes en enviarme tu reporte."
+                ),
+            )
+            return TelegramWebhookRespuesta(
+                estado="REPORTE_ALERTA_GUARDADO",
+                mensaje=f"Reporte de alerta guardado con id {evento.id}.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        if (
+            registro_evento is not None
             and media_group_id_texto
             and parametros_evento.get("media_group_id") == media_group_id_texto
             and paso_evento != PASO_EVENTO_FOTO
@@ -1602,7 +2001,7 @@ def recibir_webhook_telegram(
                 int(chat_id),
                 "Primero seleccione Reporte de evento en el menu.",
             )
-            _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
+            _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
             return TelegramWebhookRespuesta(
                 estado="FLUJO_REQUERIDO",
                 mensaje="Se recibio foto, pero no hay reporte de evento esperando foto.",
@@ -1641,6 +2040,53 @@ def recibir_webhook_telegram(
         registro_evento = _consulta_evento_activa_por_contacto(db, contacto.id)
         paso_evento = (registro_evento.parametros or {}).get("paso") if registro_evento else None
         if registro_evento is not None:
+            parametros_evento = dict(registro_evento.parametros or {})
+            if parametros_evento.get("flujo") == FLUJO_REPORTE_ALERTA and paso_evento == PASO_ALERTA_UBICACION:
+                _guardar_ubicacion_alerta(
+                    db=db,
+                    registro=registro_evento,
+                    latitud=float(location["latitude"]),
+                    longitud=float(location["longitude"]),
+                )
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    (
+                        f"Gracias {_nombre_usuario(contacto)}, ahora por favor puedes redactar el nombre de la "
+                        "comunidad y una descripcion breve de lo que esta sucediendo:"
+                    ),
+                )
+                return TelegramWebhookRespuesta(
+                    estado="ALERTA_UBICACION_RECIBIDA",
+                    mensaje="Ubicacion guardada temporalmente para el reporte de alerta.",
+                    contacto_id=contacto.id,
+                    telefono=contacto.telefono,
+                    chat_id=contacto.chat_id,
+                )
+
+            if parametros_evento.get("flujo") == FLUJO_REPORTE_ALERTA:
+                if paso_evento == PASO_ALERTA_DESCRIPCION:
+                    mensaje_alerta = (
+                        f"Gracias {_nombre_usuario(contacto)}, ahora por favor puedes redactar el nombre de la "
+                        "comunidad y una descripcion breve de lo que esta sucediendo:"
+                    )
+                elif paso_evento == PASO_ALERTA_RIESGO_PERSONAS:
+                    mensaje_alerta = "¿Puedes visualizar si existen personas en riesgo?"
+                elif paso_evento == PASO_ALERTA_CANTIDAD_PERSONAS:
+                    mensaje_alerta = "Aproximadamente, ¿cuantas personas estan en riesgo?"
+                elif paso_evento == PASO_ALERTA_FOTO:
+                    mensaje_alerta = "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+                else:
+                    mensaje_alerta = "El reporte de alerta ya tiene una ubicacion registrada."
+                _responder_si_es_posible(sender, int(chat_id), mensaje_alerta)
+                return TelegramWebhookRespuesta(
+                    estado="ALERTA_UBICACION_IGNORADA",
+                    mensaje="Se recibio ubicacion, pero no corresponde al paso actual del reporte de alerta.",
+                    contacto_id=contacto.id,
+                    telefono=contacto.telefono,
+                    chat_id=contacto.chat_id,
+                )
+
             if paso_evento == PASO_EVENTO_UBICACION:
                 registro_evento, evento = _guardar_reporte_evento(
                     db=db,
@@ -1685,7 +2131,7 @@ def recibir_webhook_telegram(
                 int(chat_id),
                 "Primero seleccione Reporte de barrido en el menu.",
             )
-            _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
+            _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
             return TelegramWebhookRespuesta(
                 estado="FLUJO_REQUERIDO",
                 mensaje="Se recibio ubicacion, pero no hay reporte de barrido activo.",
@@ -1720,6 +2166,107 @@ def recibir_webhook_telegram(
             _consulta_evento_activa_por_contacto(db, contacto_evento.id) if contacto_evento is not None else None
         )
         paso_evento = (registro_evento.parametros or {}).get("paso") if registro_evento else None
+        parametros_evento = dict(registro_evento.parametros or {}) if registro_evento else {}
+        if contacto_evento and registro_evento and parametros_evento.get("flujo") == FLUJO_REPORTE_ALERTA:
+            if paso_evento == PASO_ALERTA_UBICACION:
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    (
+                        f"Por favor {_nombre_usuario(contacto_evento)}, ayudame enviando tu ubicacion actual que "
+                        "es donde se esta desarrollando esta alerta:"
+                    ),
+                    reply_markup=_teclado_solicitar_ubicacion(),
+                )
+                return TelegramWebhookRespuesta(
+                    estado="ALERTA_UBICACION_REQUERIDA",
+                    mensaje="El reporte de alerta espera ubicacion.",
+                    contacto_id=contacto_evento.id,
+                    telefono=contacto_evento.telefono,
+                    chat_id=contacto_evento.chat_id,
+                )
+            if paso_evento == PASO_ALERTA_DESCRIPCION:
+                if len(texto) > 200:
+                    _responder_si_es_posible(
+                        sender,
+                        int(chat_id),
+                        "La descripcion debe tener maximo 200 caracteres. Por favor envie una descripcion mas corta.",
+                    )
+                    return TelegramWebhookRespuesta(
+                        estado="ALERTA_DESCRIPCION_MUY_LARGA",
+                        mensaje="La descripcion supera los 200 caracteres.",
+                        contacto_id=contacto_evento.id,
+                        telefono=contacto_evento.telefono,
+                        chat_id=contacto_evento.chat_id,
+                    )
+                _guardar_descripcion_alerta(db, registro_evento, texto)
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "¿Puedes visualizar si existen personas en riesgo?",
+                    reply_markup=_teclado_riesgo_personas(),
+                )
+                return TelegramWebhookRespuesta(
+                    estado="ALERTA_DESCRIPCION_RECIBIDA",
+                    mensaje="Descripcion guardada temporalmente para el reporte de alerta.",
+                    contacto_id=contacto_evento.id,
+                    telefono=contacto_evento.telefono,
+                    chat_id=contacto_evento.chat_id,
+                )
+            if paso_evento == PASO_ALERTA_RIESGO_PERSONAS:
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "¿Puedes visualizar si existen personas en riesgo?",
+                    reply_markup=_teclado_riesgo_personas(),
+                )
+                return TelegramWebhookRespuesta(
+                    estado="ALERTA_RIESGO_PERSONAS_REQUERIDO",
+                    mensaje="El reporte de alerta espera seleccionar si existen personas en riesgo.",
+                    contacto_id=contacto_evento.id,
+                    telefono=contacto_evento.telefono,
+                    chat_id=contacto_evento.chat_id,
+                )
+            if paso_evento == PASO_ALERTA_CANTIDAD_PERSONAS:
+                if not PATRON_CANTIDAD_PERSONAS.fullmatch(texto):
+                    _responder_si_es_posible(
+                        sender,
+                        int(chat_id),
+                        "Ingrese solo numeros, maximo 6 digitos.",
+                    )
+                    return TelegramWebhookRespuesta(
+                        estado="ALERTA_CANTIDAD_PERSONAS_INVALIDA",
+                        mensaje="La cantidad de personas en riesgo debe tener maximo 6 digitos numericos.",
+                        contacto_id=contacto_evento.id,
+                        telefono=contacto_evento.telefono,
+                        chat_id=contacto_evento.chat_id,
+                    )
+                _guardar_cantidad_personas_alerta(db, registro_evento, int(texto))
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                )
+                return TelegramWebhookRespuesta(
+                    estado="ALERTA_CANTIDAD_PERSONAS_RECIBIDA",
+                    mensaje="Cantidad de personas en riesgo guardada temporalmente.",
+                    contacto_id=contacto_evento.id,
+                    telefono=contacto_evento.telefono,
+                    chat_id=contacto_evento.chat_id,
+                )
+            if paso_evento == PASO_ALERTA_FOTO:
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                )
+                return TelegramWebhookRespuesta(
+                    estado="ALERTA_FOTO_REQUERIDA",
+                    mensaje="El reporte de alerta espera una fotografia.",
+                    contacto_id=contacto_evento.id,
+                    telefono=contacto_evento.telefono,
+                    chat_id=contacto_evento.chat_id,
+                )
         if contacto_evento and registro_evento and paso_evento == PASO_EVENTO_FOTO:
             _responder_si_es_posible(sender, int(chat_id), "Primero envie una foto del evento.")
             return TelegramWebhookRespuesta(
@@ -1850,7 +2397,7 @@ def recibir_webhook_telegram(
         )
         _responder_si_es_posible(sender, int(chat_id), mensaje)
         if contacto is not None and estado != "TELEFONO_YA_REGISTRADO":
-            _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
+            _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
         return TelegramWebhookRespuesta(
             estado=estado,
             mensaje=mensaje,
@@ -1861,7 +2408,7 @@ def recibir_webhook_telegram(
 
     contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
     if contacto and contacto.telefono:
-        _mostrar_menu_principal_si_es_posible(db, sender, int(chat_id))
+        _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
         return TelegramWebhookRespuesta(
             estado="MENU_PRINCIPAL",
             mensaje="Contacto registrado. Se mostro el menu principal.",
