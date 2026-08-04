@@ -82,7 +82,11 @@ def _asegurar_tabla_eventos(session: Session) -> None:
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 contacto_id bigint NOT NULL,
+                tipo_alerta_id bigint,
+                alerta_encuesta_id bigint,
                 descripcion text NOT NULL,
+                personas_en_riesgo boolean NOT NULL DEFAULT false,
+                cantidad_personas_riesgo integer NOT NULL DEFAULT 0,
                 latitud numeric(10,7) NOT NULL,
                 longitud numeric(10,7) NOT NULL,
                 fecha_reporte timestamp with time zone NOT NULL DEFAULT now(),
@@ -98,9 +102,22 @@ def _asegurar_tabla_eventos(session: Session) -> None:
                 CONSTRAINT chk_telegram_eventos_latitud
                     CHECK (latitud >= -90 AND latitud <= 90),
                 CONSTRAINT chk_telegram_eventos_longitud
-                    CHECK (longitud >= -180 AND longitud <= 180)
+                    CHECK (longitud >= -180 AND longitud <= 180),
+                CONSTRAINT chk_telegram_eventos_cantidad_personas_riesgo
+                    CHECK (cantidad_personas_riesgo >= 0 AND cantidad_personas_riesgo <= 999999)
             )
             """
+        )
+    )
+    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS tipo_alerta_id bigint"))
+    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS alerta_encuesta_id bigint"))
+    session.execute(
+        text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS personas_en_riesgo boolean NOT NULL DEFAULT false")
+    )
+    session.execute(
+        text(
+            "ALTER TABLE public.telegram_eventos "
+            "ADD COLUMN IF NOT EXISTS cantidad_personas_riesgo integer NOT NULL DEFAULT 0"
         )
     )
 
@@ -163,6 +180,7 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
                 tipo_alerta_id bigint NOT NULL,
                 nombre varchar(150) NOT NULL,
                 descripcion text,
+                color varchar(20),
                 orden integer NOT NULL,
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
@@ -175,6 +193,7 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
             """
         )
     )
+    session.execute(text("ALTER TABLE public.alerta_encuesta ADD COLUMN IF NOT EXISTS color varchar(20)"))
     session.execute(
         text(
             """
@@ -216,15 +235,16 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            INSERT INTO public.alerta_encuesta (tipo_alerta_id, orden, nombre, descripcion)
+            INSERT INTO public.alerta_encuesta (tipo_alerta_id, orden, nombre, descripcion, color)
             VALUES
-                (6, 1, 'LLUVIA MUY FUERTE', 'Rapido anegamiento de calles.'),
-                (6, 2, 'LLUVIA FUERTE', 'Poco anegamiento de calles que dificulta movilidad.'),
-                (6, 3, 'LLUVIA MODERADA', 'Visibilidad reducida y acumulacion leve de agua.'),
-                (4, 1, 'MUY FUERTE', 'Panico general, personas pierden estabilidad.')
+                (6, 1, 'LLUVIA MUY FUERTE', 'Rapido anegamiento de calles.', '🔴'),
+                (6, 2, 'LLUVIA FUERTE', 'Poco anegamiento de calles que dificulta movilidad.', '🟡'),
+                (6, 3, 'LLUVIA MODERADA', 'Visibilidad reducida y acumulacion leve de agua.', '🟢'),
+                (4, 1, 'MUY FUERTE', 'Panico general, personas pierden estabilidad.', '🔴')
             ON CONFLICT (tipo_alerta_id, orden) DO UPDATE
             SET nombre = EXCLUDED.nombre,
                 descripcion = EXCLUDED.descripcion,
+                color = EXCLUDED.color,
                 activo = true
             """
         )
@@ -359,6 +379,7 @@ def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
             "LLUVIA FUERTE",
             "LLUVIA MODERADA",
         ]
+        assert [item["color"] for item in encuesta_data] == ["🔴", "🟡", "🟢"]
 
         encuesta_filtrada = client.get("/api/telegram/alerta-encuesta", params={"tipo_alerta_id": 4})
         assert encuesta_filtrada.status_code == 200
@@ -888,16 +909,31 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
         evento = session.execute(
             text(
                 """
-                SELECT descripcion, foto_file_id, foto_file_unique_id
-                FROM telegram_eventos
-                WHERE contacto_id = :contacto_id
+                SELECT
+                    e.tipo_alerta_id,
+                    t.descripcion AS tipo_alerta,
+                    e.alerta_encuesta_id,
+                    ae.nombre AS nivel_alerta,
+                    e.descripcion,
+                    e.personas_en_riesgo,
+                    e.cantidad_personas_riesgo,
+                    e.foto_file_id,
+                    e.foto_file_unique_id
+                FROM telegram_eventos e
+                LEFT JOIN tipo_alertas t ON t.id = e.tipo_alerta_id
+                LEFT JOIN alerta_encuesta ae ON ae.id = e.alerta_encuesta_id
+                WHERE e.contacto_id = :contacto_id
                 """
             ),
             {"contacto_id": foto.json()["contacto_id"]},
         ).mappings().one()
-        assert "Tipo de alerta: LLUVIAS" in evento["descripcion"]
-        assert "Nivel: LLUVIA FUERTE" in evento["descripcion"]
-        assert "Cantidad aproximada de personas en riesgo: 25" in evento["descripcion"]
+        assert evento["tipo_alerta_id"] == 6
+        assert evento["tipo_alerta"] == "LLUVIAS"
+        assert evento["alerta_encuesta_id"] is not None
+        assert evento["nivel_alerta"] == "LLUVIA FUERTE"
+        assert evento["descripcion"] == "Comunidad San Jose, lluvia fuerte con acumulacion de agua."
+        assert evento["personas_en_riesgo"] is True
+        assert evento["cantidad_personas_riesgo"] == 25
         assert evento["foto_file_id"] == "foto-big"
         assert evento["foto_file_unique_id"] == "unique-big"
     finally:

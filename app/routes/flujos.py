@@ -135,7 +135,6 @@ MEDIA_TYPE_POR_EXTENSION = {
 }
 REGISTROS_TELEFONO_PENDIENTES: dict[int, datetime] = {}
 REGISTRO_TELEFONO_TTL_SEGUNDOS = 600
-COLORES_ENCUESTA_ALERTA = ["🔴", "🟡", "🟢", "🟠", "🔵", "🟣", "⚪", "⚫"]
 
 
 def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
@@ -206,6 +205,7 @@ def _alerta_encuesta_respuesta(alerta_encuesta: AlertaEncuesta) -> AlertaEncuest
         tipo_alerta_id=alerta_encuesta.tipo_alerta_id,
         nombre=alerta_encuesta.nombre,
         descripcion=alerta_encuesta.descripcion,
+        color=alerta_encuesta.color,
         orden=alerta_encuesta.orden,
         activo=alerta_encuesta.activo,
     )
@@ -456,10 +456,10 @@ def _encuestas_alerta_activas(db: Session, tipo_alerta_id: int) -> list[AlertaEn
     )
 
 
-def _texto_opcion_encuesta_alerta(opcion: AlertaEncuesta, indice: int) -> str:
-    color = COLORES_ENCUESTA_ALERTA[indice % len(COLORES_ENCUESTA_ALERTA)]
+def _texto_opcion_encuesta_alerta(opcion: AlertaEncuesta) -> str:
+    color = f"{opcion.color.strip()} " if opcion.color and opcion.color.strip() else ""
     descripcion = f": {opcion.descripcion}" if opcion.descripcion else ""
-    return f"{color} {opcion.nombre}{descripcion}"
+    return f"{color}{opcion.nombre}{descripcion}"
 
 
 def _teclado_menu_scripts() -> dict[str, Any]:
@@ -1081,7 +1081,7 @@ def _enviar_encuesta_alerta_si_es_posible(
     if not opciones:
         _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para este tipo de alerta.")
         return
-    textos = [_texto_opcion_encuesta_alerta(opcion, indice) for indice, opcion in enumerate(opciones)]
+    textos = [_texto_opcion_encuesta_alerta(opcion) for opcion in opciones]
     if sender is None:
         return
     try:
@@ -1211,6 +1211,15 @@ def _descripcion_evento_desde_alerta(parametros: dict[str, Any]) -> str:
     return "\n".join(lineas)
 
 
+def _entero_o_none(valor: Any) -> int | None:
+    if valor is None:
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return None
+
+
 def _guardar_foto_y_finalizar_alerta(
     db: Session,
     contacto: TelegramContacto,
@@ -1232,10 +1241,18 @@ def _guardar_foto_y_finalizar_alerta(
     if media_group_id:
         parametros["media_group_id"] = media_group_id
     parametros["paso"] = "COMPLETADO"
+    tipo_alerta = parametros.get("tipo_alerta") or {}
+    encuesta = parametros.get("encuesta") or {}
+    personas_en_riesgo = bool(parametros.get("personas_en_riesgo"))
+    cantidad_personas_riesgo = int(parametros.get("cantidad_personas_riesgo") or 0)
 
     evento = TelegramEvento(
         contacto_id=contacto.id,
-        descripcion=_descripcion_evento_desde_alerta(parametros),
+        tipo_alerta_id=_entero_o_none(tipo_alerta.get("id")),
+        alerta_encuesta_id=_entero_o_none(encuesta.get("id")),
+        descripcion=str(parametros.get("descripcion") or "").strip(),
+        personas_en_riesgo=personas_en_riesgo,
+        cantidad_personas_riesgo=cantidad_personas_riesgo,
         foto_file_id=str(foto["file_id"]),
         foto_file_unique_id=foto.get("file_unique_id"),
         latitud=Decimal(str(ubicacion["latitud"])),
@@ -2611,7 +2628,11 @@ def listar_fotos_eventos(
         FotoEventoRespuesta(
             evento_id=evento.id,
             contacto_id=evento.contacto_id,
+            tipo_alerta_id=evento.tipo_alerta_id,
+            alerta_encuesta_id=evento.alerta_encuesta_id,
             descripcion=evento.descripcion,
+            personas_en_riesgo=bool(evento.personas_en_riesgo),
+            cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
             latitud=float(evento.latitud),
             longitud=float(evento.longitud),
             fecha_reporte=evento.fecha_reporte.isoformat(),

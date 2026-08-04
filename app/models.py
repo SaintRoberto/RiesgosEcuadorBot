@@ -68,6 +68,7 @@ class AlertaEncuesta(Base):
     )
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text)
+    color: Mapped[str | None] = mapped_column(String(20))
     orden: Mapped[int] = mapped_column(Integer, nullable=False)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     fecha_creacion: Mapped[datetime] = mapped_column(
@@ -134,6 +135,12 @@ class TelegramEvento(Base):
     __table_args__ = (
         CheckConstraint("latitud >= -90 AND latitud <= 90", name="chk_telegram_eventos_latitud"),
         CheckConstraint("longitud >= -180 AND longitud <= 180", name="chk_telegram_eventos_longitud"),
+        CheckConstraint(
+            "cantidad_personas_riesgo >= 0 AND cantidad_personas_riesgo <= 999999",
+            name="chk_telegram_eventos_cantidad_personas_riesgo",
+        ),
+        Index("idx_telegram_eventos_tipo_alerta", "tipo_alerta_id"),
+        Index("idx_telegram_eventos_alerta_encuesta", "alerta_encuesta_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
@@ -142,7 +149,17 @@ class TelegramEvento(Base):
         ForeignKey("telegram_contactos.id", name="fk_telegram_eventos_contacto"),
         nullable=False,
     )
+    tipo_alerta_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("tipo_alertas.id", name="fk_telegram_eventos_tipo_alerta"),
+    )
+    alerta_encuesta_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("alerta_encuesta.id", name="fk_telegram_eventos_alerta_encuesta"),
+    )
     descripcion: Mapped[str] = mapped_column(Text, nullable=False)
+    personas_en_riesgo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    cantidad_personas_riesgo: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     latitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
     longitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
     fecha_reporte: Mapped[datetime] = mapped_column(

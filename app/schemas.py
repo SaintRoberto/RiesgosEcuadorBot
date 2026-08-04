@@ -84,6 +84,7 @@ class AlertaEncuestaRespuesta(BaseModel):
     tipo_alerta_id: int
     nombre: str
     descripcion: str | None
+    color: str | None
     orden: int
     activo: bool
 
@@ -158,7 +159,11 @@ class TelegramWebhookRespuesta(BaseModel):
 class FotoEventoRespuesta(BaseModel):
     evento_id: int
     contacto_id: int
+    tipo_alerta_id: int | None = None
+    alerta_encuesta_id: int | None = None
     descripcion: str
+    personas_en_riesgo: bool
+    cantidad_personas_riesgo: int
     latitud: float
     longitud: float
     fecha_reporte: str
