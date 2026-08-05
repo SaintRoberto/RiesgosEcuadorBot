@@ -325,6 +325,26 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/eventos/seguimientos" in paths
 
 
+def test_admin_telegram_user_ids_requiere_env_con_corchetes() -> None:
+    get_settings_original = flujos.get_settings
+    try:
+        flujos.get_settings = lambda: type(
+            "SettingsStub",
+            (),
+            {"telegram_admin_user_ids": "[6869758976,1234567890]"},
+        )()
+        assert flujos._admin_telegram_user_ids() == {6869758976, 1234567890}
+
+        flujos.get_settings = lambda: type(
+            "SettingsStub",
+            (),
+            {"telegram_admin_user_ids": "6869758976,1234567890"},
+        )()
+        assert flujos._admin_telegram_user_ids() == set()
+    finally:
+        flujos.get_settings = get_settings_original
+
+
 def test_endpoint_tipo_alertas_lista_catalogo() -> None:
     connection = engine.connect()
     transaction = connection.begin()

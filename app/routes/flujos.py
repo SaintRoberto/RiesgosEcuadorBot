@@ -715,9 +715,25 @@ def _es_comando_reportes(texto: str) -> bool:
 
 def _admin_telegram_user_ids() -> set[int]:
     valor = get_settings().telegram_admin_user_ids
+    ids: set[int] = set()
     if isinstance(valor, str):
-        return {int(item.strip()) for item in valor.split(",") if item.strip()}
-    return {int(item) for item in valor}
+        texto_config = valor.strip()
+        if not texto_config:
+            return set()
+        if not texto_config.startswith("[") or not texto_config.endswith("]"):
+            return set()
+        partes = texto_config[1:-1].split(",")
+    else:
+        partes = list(valor)
+    for item in partes:
+        texto = str(item).strip().strip("\"'")
+        if not texto:
+            continue
+        try:
+            ids.add(int(texto))
+        except ValueError:
+            continue
+    return ids
 
 
 def _es_administrador(telegram_user_id: int) -> bool:
