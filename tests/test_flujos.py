@@ -1001,6 +1001,7 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
     get_settings_original = flujos.get_settings
 
     try:
+        _asegurar_tipo_alertas(session)
         flujos.get_settings = lambda: type(
             "SettingsStub",
             (),
@@ -1037,7 +1038,8 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
             yield session
 
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        sender = FakeTelegramSender()
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
         client = TestClient(app)
 
         menu = client.post(
@@ -1053,6 +1055,9 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         )
         assert menu.status_code == 200
         assert menu.json()["estado"] == "MENU_SCRIPTS"
+        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][0][0]["text"] == "CA\u00cdDA DE CENIZA"
+        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["text"] == "LLUVIAS"
+        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["callback_data"] == "SCRIPT_ALERTA:6"
 
         ejecucion = client.post(
             "/api/telegram/webhook",
@@ -1064,7 +1069,7 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
                     "message": {
                         "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
                     },
-                    "data": "SCRIPT_BARRIDO_LLUVIA",
+                    "data": "SCRIPT_ALERTA:6",
                 },
             },
         )

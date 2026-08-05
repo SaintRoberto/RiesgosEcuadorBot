@@ -120,14 +120,8 @@ CALLBACK_ALERTA_RIESGO_NO = "ALERTA_RIESGO:NO"
 CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
 MENSAJE_MENU_SCRIPTS = "Seleccione el script que desea ejecutar:"
-OPCION_SCRIPT_BARRIDO_LLUVIA = "Ejecutar script de barridos lluvia"
-OPCION_SCRIPT_BARRIDO_RIOS = "Ejecutar script de barridos rios"
-OPCION_SCRIPT_BARRIDO_SISMOS = "Ejecutar script de barridos sismos"
-OPCION_SCRIPT_BARRIDO_CENIZA = "Ejecutar script de barridos ceniza"
-CALLBACK_SCRIPT_BARRIDO_LLUVIA = "SCRIPT_BARRIDO_LLUVIA"
-CALLBACK_SCRIPT_BARRIDO_RIOS = "SCRIPT_BARRIDO_RIOS"
-CALLBACK_SCRIPT_BARRIDO_SISMOS = "SCRIPT_BARRIDO_SISMOS"
-CALLBACK_SCRIPT_BARRIDO_CENIZA = "SCRIPT_BARRIDO_CENIZA"
+CALLBACK_SCRIPT_ALERTA_PREFIX = "SCRIPT_ALERTA:"
+TIPO_ALERTA_LLUVIAS_ID = 6
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
 SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su ubicacion y nivel de lluvia."
 MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
@@ -521,13 +515,17 @@ def _texto_opcion_encuesta_alerta(opcion: AlertaEncuesta) -> str:
     return f"{color}{opcion.nombre}{descripcion}"
 
 
-def _teclado_menu_scripts() -> dict[str, Any]:
+def _teclado_menu_scripts(db: Session) -> dict[str, Any]:
+    tipos_alerta = _tipos_alerta_activos(db)
     return {
         "inline_keyboard": [
-            [{"text": OPCION_SCRIPT_BARRIDO_LLUVIA, "callback_data": CALLBACK_SCRIPT_BARRIDO_LLUVIA}],
-            [{"text": OPCION_SCRIPT_BARRIDO_RIOS, "callback_data": CALLBACK_SCRIPT_BARRIDO_RIOS}],
-            [{"text": OPCION_SCRIPT_BARRIDO_SISMOS, "callback_data": CALLBACK_SCRIPT_BARRIDO_SISMOS}],
-            [{"text": OPCION_SCRIPT_BARRIDO_CENIZA, "callback_data": CALLBACK_SCRIPT_BARRIDO_CENIZA}],
+            [
+                {
+                    "text": tipo_alerta.descripcion,
+                    "callback_data": f"{CALLBACK_SCRIPT_ALERTA_PREFIX}{tipo_alerta.id}",
+                }
+            ]
+            for tipo_alerta in tipos_alerta
         ],
     }
 
@@ -564,12 +562,12 @@ def _mostrar_menu_principal_si_es_posible(
     )
 
 
-def _mostrar_menu_scripts_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+def _mostrar_menu_scripts_si_es_posible(db: Session, sender: TelegramSender | None, chat_id: int) -> None:
     _responder_si_es_posible(
         sender,
         chat_id,
         MENSAJE_MENU_SCRIPTS,
-        reply_markup=_teclado_menu_scripts(),
+        reply_markup=_teclado_menu_scripts(db),
     )
 
 
@@ -1702,26 +1700,38 @@ def _recibir_callback_menu_principal(
         return _seleccionar_reporte_barrido(db, contacto, sender)
     if data == CALLBACK_REPORTE_EVENTO:
         return _seleccionar_reporte_evento(db, contacto, sender)
-    if data == CALLBACK_SCRIPT_BARRIDO_LLUVIA:
-        total = _ejecutar_script_barrido_lluvia(db, sender)
-        mensaje = f"Script de barridos lluvia ejecutado. Solicitudes enviadas: {total}."
+    if isinstance(data, str) and data.startswith(CALLBACK_SCRIPT_ALERTA_PREFIX):
+        try:
+            tipo_alerta_id = int(data.removeprefix(CALLBACK_SCRIPT_ALERTA_PREFIX))
+        except ValueError:
+            tipo_alerta_id = 0
+        tipo_alerta = db.get(TipoAlerta, tipo_alerta_id)
+        if tipo_alerta is None or not tipo_alerta.activo:
+            mensaje = "El tipo de alerta seleccionado no esta disponible."
+            _responder_si_es_posible(sender, int(chat_id), mensaje)
+            return TelegramWebhookRespuesta(
+                estado="SCRIPT_ALERTA_NO_DISPONIBLE",
+                mensaje=mensaje,
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID:
+            total = _ejecutar_script_barrido_lluvia(db, sender)
+            mensaje = f"Script de barridos lluvia ejecutado. Solicitudes enviadas: {total}."
+            _responder_si_es_posible(sender, int(chat_id), mensaje)
+            return TelegramWebhookRespuesta(
+                estado="SCRIPT_BARRIDO_LLUVIA_EJECUTADO",
+                mensaje=mensaje,
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        mensaje = f"El script de {tipo_alerta.descripcion} aun no esta configurado."
         _responder_si_es_posible(sender, int(chat_id), mensaje)
         return TelegramWebhookRespuesta(
-            estado="SCRIPT_BARRIDO_LLUVIA_EJECUTADO",
-            mensaje=mensaje,
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
-        )
-    if data in {
-        CALLBACK_SCRIPT_BARRIDO_RIOS,
-        CALLBACK_SCRIPT_BARRIDO_SISMOS,
-        CALLBACK_SCRIPT_BARRIDO_CENIZA,
-    }:
-        _responder_si_es_posible(sender, int(chat_id), "Ese script aun no esta configurado.")
-        return TelegramWebhookRespuesta(
             estado="SCRIPT_NO_CONFIGURADO",
-            mensaje="El script seleccionado aun no esta configurado.",
+            mensaje=mensaje,
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -1926,7 +1936,7 @@ def recibir_webhook_telegram(
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
-        _mostrar_menu_scripts_si_es_posible(sender, contacto.chat_id)
+        _mostrar_menu_scripts_si_es_posible(db, sender, contacto.chat_id)
         return TelegramWebhookRespuesta(
             estado="MENU_SCRIPTS",
             mensaje="Se mostro el menu de scripts.",
