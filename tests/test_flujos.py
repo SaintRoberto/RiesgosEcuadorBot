@@ -60,6 +60,26 @@ class FakeTelegramSender:
         return b"\xff\xd8\xff\xe0fake-jpeg-content"
 
 
+def test_extrae_ubicacion_administrativa_con_fallback_de_nominatim() -> None:
+    ubicacion = flujos._extraer_ubicacion_administrativa_desde_address(
+        {
+            "residential": "Coop. Puerto Rico",
+            "suburb": "Terminal Portuario Internacional Puerto Hondo S.A. - TPI",
+            "village": "Puerto Hondo",
+            "city": "Guayaquil",
+            "county": "Guayaquil",
+            "state": "Guayas",
+            "country_code": "ec",
+        }
+    )
+
+    assert ubicacion == {
+        "provincia": "Guayas",
+        "canton": "Guayaquil",
+        "parroquia": "Puerto Hondo",
+    }
+
+
 def _asegurar_niveles(session: Session) -> None:
     total = session.execute(
         text(
@@ -1601,7 +1621,7 @@ def test_endpoint_lista_fotos_eventos() -> None:
         connection.close()
 
 
-def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados() -> None:
+def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -1609,6 +1629,11 @@ def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        monkeypatch.setattr(
+            flujos,
+            "_resolver_ubicacion_administrativa",
+            lambda latitud, longitud: {"provincia": "Guayas", "canton": "Guayaquil", "parroquia": "Tarqui"},
+        )
         _asegurar_tipo_alertas(session)
         _asegurar_tabla_eventos(session)
         contacto_id = session.execute(
@@ -1679,6 +1704,9 @@ def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados() -> None:
         assert item["nombre_alerta"] == "LLUVIAS"
         assert item["descripcion"] == "Lluvia fuerte en la comunidad."
         assert item["cantidad_personas_riesgo"] == 15
+        assert item["provincia"] == "Guayas"
+        assert item["canton"] == "Guayaquil"
+        assert item["parroquia"] == "Tarqui"
         assert item["fecha_reporte"][2] == "/"
         assert item["fecha_reporte"][5] == "/"
         assert item["fecha_reporte"][10] == " "

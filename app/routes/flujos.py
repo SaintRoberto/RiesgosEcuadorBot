@@ -4,7 +4,9 @@ import unicodedata
 from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any
+from urllib import error as urlerror
 from urllib.parse import urlencode
+from urllib import request as urlrequest
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import and_, func, or_, select
@@ -120,6 +122,10 @@ SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
 SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su ubicacion y nivel de lluvia."
 MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
 QUICKCHART_URL = "https://quickchart.io/chart"
+NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
+NOMINATIM_USER_AGENT = "RiesgosEcuadorBot/1.0"
+NOMINATIM_TIMEOUT_SECONDS = 5
+PAIS_ECUADOR_CODIGO = "ec"
 MEDIA_TYPE_POR_EXTENSION = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -146,6 +152,71 @@ def _media_type_desde_file_path(file_path: str) -> str:
 
 def _formatear_fecha_reporte(fecha_reporte: datetime) -> str:
     return fecha_reporte.strftime("%d/%m/%Y %H:%M")
+
+
+def _ubicacion_admin_vacia() -> dict[str, str | None]:
+    return {"provincia": None, "canton": None, "parroquia": None}
+
+
+def _texto_address(address: dict[str, Any], campos: list[str]) -> str | None:
+    for campo in campos:
+        valor = address.get(campo)
+        if isinstance(valor, str) and valor.strip():
+            return valor.strip()
+    return None
+
+
+def _extraer_ubicacion_administrativa_desde_address(address: dict[str, Any]) -> dict[str, str | None]:
+    if str(address.get("country_code") or "").lower() not in {"", PAIS_ECUADOR_CODIGO}:
+        return _ubicacion_admin_vacia()
+
+    return {
+        "provincia": _texto_address(address, ["state", "region"]),
+        "canton": _texto_address(address, ["county", "city", "municipality", "town"]),
+        "parroquia": _texto_address(
+            address,
+            ["city_district", "village", "town", "municipality", "suburb", "neighbourhood"],
+        ),
+    }
+
+
+def _resolver_ubicacion_administrativa(latitud: float, longitud: float) -> dict[str, str | None]:
+    if not (-90 <= latitud <= 90 and -180 <= longitud <= 180):
+        return _ubicacion_admin_vacia()
+
+    query = urlencode(
+        {
+            "format": "jsonv2",
+            "lat": latitud,
+            "lon": longitud,
+            "zoom": 18,
+            "addressdetails": 1,
+        }
+    )
+    http_request = urlrequest.Request(
+        f"{NOMINATIM_REVERSE_URL}?{query}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": NOMINATIM_USER_AGENT,
+        },
+        method="GET",
+    )
+
+    try:
+        with urlrequest.urlopen(http_request, timeout=NOMINATIM_TIMEOUT_SECONDS) as response:
+            body = response.read().decode("utf-8")
+    except (OSError, urlerror.HTTPError, TimeoutError, ValueError):
+        return _ubicacion_admin_vacia()
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return _ubicacion_admin_vacia()
+
+    address = data.get("address") if isinstance(data, dict) else None
+    if not isinstance(address, dict):
+        return _ubicacion_admin_vacia()
+    return _extraer_ubicacion_administrativa_desde_address(address)
 
 
 def _contactos_activos_por_telefono(db: Session, telefonos: list[str]) -> list[TelegramContacto]:
@@ -2744,22 +2815,37 @@ def listar_eventos(
         .outerjoin(TipoAlerta, TipoAlerta.id == TelegramEvento.tipo_alerta_id)
         .order_by(TelegramEvento.fecha_reporte.desc())
     ).all()
-    return [
-        EventoRespuesta(
-            id=evento.id,
-            contacto_id=evento.contacto_id,
-            tipo_alerta_id=evento.tipo_alerta_id,
-            nombre_alerta=nombre_alerta,
-            alerta_encuesta_id=evento.alerta_encuesta_id,
-            descripcion=evento.descripcion,
-            cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
-            latitud=float(evento.latitud),
-            longitud=float(evento.longitud),
-            fecha_reporte=_formatear_fecha_reporte(evento.fecha_reporte),
-            foto_url=str(request.url_for("obtener_foto_evento", evento_id=evento.id)),
+
+    ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
+    respuesta: list[EventoRespuesta] = []
+    for evento, nombre_alerta in filas:
+        latitud = float(evento.latitud)
+        longitud = float(evento.longitud)
+        cache_key = (latitud, longitud)
+        ubicacion_admin = ubicaciones_cache.get(cache_key)
+        if ubicacion_admin is None:
+            ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
+            ubicaciones_cache[cache_key] = ubicacion_admin
+
+        respuesta.append(
+            EventoRespuesta(
+                id=evento.id,
+                contacto_id=evento.contacto_id,
+                tipo_alerta_id=evento.tipo_alerta_id,
+                nombre_alerta=nombre_alerta,
+                alerta_encuesta_id=evento.alerta_encuesta_id,
+                descripcion=evento.descripcion,
+                cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
+                latitud=latitud,
+                longitud=longitud,
+                provincia=ubicacion_admin["provincia"],
+                canton=ubicacion_admin["canton"],
+                parroquia=ubicacion_admin["parroquia"],
+                fecha_reporte=_formatear_fecha_reporte(evento.fecha_reporte),
+                foto_url=str(request.url_for("obtener_foto_evento", evento_id=evento.id)),
+            )
         )
-        for evento, nombre_alerta in filas
-    ]
+    return respuesta
 
 
 @router.get(

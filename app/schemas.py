@@ -157,6 +157,9 @@ class EventoRespuesta(BaseModel):
     cantidad_personas_riesgo: int
     latitud: float
     longitud: float
+    provincia: str | None = None
+    canton: str | None = None
+    parroquia: str | None = None
     fecha_reporte: str
     foto_url: str
 
