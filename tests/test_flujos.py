@@ -312,8 +312,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/boletines" in paths
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
-    assert "/api/telegram/barridos/reporte-lluvia" in paths
-    assert "/api/telegram/barridos/reporte-lluvia/grafico/enviar" in paths
+    assert "/api/telegram/reportes/alertas/{tipo_alerta_id}" in paths
     assert "/api/telegram/tipo-alertas" in paths
     assert "/api/telegram/tipo-alertas/{tipo_alerta_id}" in paths
     assert "/api/telegram/alerta-encuesta" in paths
@@ -960,11 +959,15 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
     chat_id_1 = -(uuid4().int % 1000000000)
     chat_id_2 = -(uuid4().int % 1000000000)
     telefonos_originales = flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS
-    admins_originales = flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS
+    get_settings_original = flujos.get_settings
 
     try:
         flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS = [telefono_1, telefono_2]
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
+        flujos.get_settings = lambda: type(
+            "SettingsStub",
+            (),
+            {"telegram_admin_user_ids": {chat_id_admin}},
+        )()
         session.execute(
             text(
                 """
@@ -1008,21 +1011,7 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
             },
         )
         assert menu.status_code == 200
-        assert menu.json()["estado"] == "ESPERANDO_PASSCODE_SCRIPT"
-
-        passcode = client.post(
-            "/api/telegram/webhook",
-            json={
-                "update_id": 81,
-                "message": {
-                    "from": {"id": chat_id_admin, "first_name": "Admin"},
-                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
-                    "text": "Sngre.2026",
-                },
-            },
-        )
-        assert passcode.status_code == 200
-        assert passcode.json()["estado"] == "MENU_SCRIPTS"
+        assert menu.json()["estado"] == "MENU_SCRIPTS"
 
         ejecucion = client.post(
             "/api/telegram/webhook",
@@ -1058,111 +1047,14 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         assert total == 2
     finally:
         flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS = telefonos_originales
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
+        flujos.get_settings = get_settings_original
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()
         connection.close()
 
 
-def test_webhook_scripts_bloquea_passcode_tras_tres_intentos() -> None:
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
-    chat_id_admin = -(uuid4().int % 1000000000)
-    admins_originales = flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS
-
-    try:
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = {chat_id_admin}
-        session.execute(
-            text(
-                """
-                INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
-                VALUES
-                    (:telegram_user_id, :chat_id, :telefono, true)
-                """
-            ),
-            {
-                "telegram_user_id": chat_id_admin,
-                "chat_id": chat_id_admin,
-                "telefono": f"+593098{uuid4().int % 1000000:06d}",
-            },
-        )
-
-        def override_get_db() -> Generator[Session, None, None]:
-            yield session
-
-        app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
-        client = TestClient(app)
-
-        menu = client.post(
-            "/api/telegram/webhook",
-            json={
-                "update_id": 90,
-                "message": {
-                    "from": {"id": chat_id_admin, "first_name": "Admin"},
-                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
-                    "text": "/scripts",
-                },
-            },
-        )
-        assert menu.status_code == 200
-        assert menu.json()["estado"] == "ESPERANDO_PASSCODE_SCRIPT"
-
-        for update_id in [91, 92]:
-            respuesta = client.post(
-                "/api/telegram/webhook",
-                json={
-                    "update_id": update_id,
-                    "message": {
-                        "from": {"id": chat_id_admin, "first_name": "Admin"},
-                        "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
-                        "text": "incorrecto",
-                    },
-                },
-            )
-            assert respuesta.status_code == 200
-            assert respuesta.json()["estado"] == "PASSCODE_SCRIPT_INVALIDO"
-
-        bloqueo = client.post(
-            "/api/telegram/webhook",
-            json={
-                "update_id": 93,
-                "message": {
-                    "from": {"id": chat_id_admin, "first_name": "Admin"},
-                    "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
-                    "text": "incorrecto",
-                },
-            },
-        )
-        assert bloqueo.status_code == 200
-        assert bloqueo.json()["estado"] == "PASSCODE_SCRIPT_BLOQUEADO"
-
-        pendientes = session.execute(
-            text(
-                """
-                SELECT count(*)
-                FROM telegram_consultas tc
-                JOIN telegram_contactos c ON c.id = tc.contacto_id
-                WHERE c.telegram_user_id = :telegram_user_id
-                  AND tc.tipo_consulta = 'SCRIPT_AUTH'
-                  AND tc.estado = 'PROCESANDO'
-                """
-            ),
-            {"telegram_user_id": chat_id_admin},
-        ).scalar_one()
-        assert pendientes == 0
-    finally:
-        flujos.SCRIPT_ADMIN_TELEGRAM_USER_IDS = admins_originales
-        app.dependency_overrides.clear()
-        session.close()
-        transaction.rollback()
-        connection.close()
-
-
-def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
+def test_endpoint_reporte_alerta_devuelve_json_y_chart_url() -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -1170,8 +1062,9 @@ def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
-        _asegurar_niveles(session)
-        session.execute(text("DELETE FROM telegram_barridos"))
+        _asegurar_catalogos_alertas(session)
+        _asegurar_tabla_eventos(session)
+        session.execute(text("DELETE FROM telegram_eventos"))
         contacto_id = session.execute(
             text(
                 """
@@ -1184,287 +1077,154 @@ def test_webhook_reporte_lluvia_muestra_conteos_por_intensidad() -> None:
             ),
             {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
         ).scalar_one()
-        niveles = {
-            row["nombre"]: row["id"]
-            for row in session.execute(
-                text(
-                    """
-                    SELECT id, nombre
-                    FROM catalogo_niveles_evento
-                    WHERE nombre IN ('DEBIL', 'MODERADO', 'FUERTE', 'MUY_FUERTE')
-                    """
-                )
-            ).mappings()
-        }
+        lluvia_fuerte_id = session.execute(
+            text(
+                """
+                SELECT id
+                FROM alerta_encuesta
+                WHERE tipo_alerta_id = 6
+                  AND nombre = 'LLUVIA FUERTE'
+                LIMIT 1
+                """
+            )
+        ).scalar_one()
         session.execute(
             text(
                 """
-                INSERT INTO telegram_barridos
-                    (contacto_id, nivel_id, latitud, longitud)
+                INSERT INTO telegram_eventos
+                    (contacto_id, tipo_alerta_id, alerta_encuesta_id, descripcion, foto_file_id, latitud, longitud)
                 VALUES
-                    (:contacto_id, :nivel_debil, -0.1806532, -78.4678382),
-                    (:contacto_id, :nivel_fuerte, -0.1806532, -78.4678382),
-                    (:contacto_id, :nivel_fuerte, -0.1806532, -78.4678382),
-                    (:contacto_id, :nivel_muy_fuerte, -0.1806532, -78.4678382)
+                    (:contacto_id, 6, :alerta_encuesta_id, 'Lluvia fuerte 1', 'foto-1', -0.1806532, -78.4678382),
+                    (:contacto_id, 6, :alerta_encuesta_id, 'Lluvia fuerte 2', 'foto-2', -0.1806532, -78.4678382)
                 """
             ),
-            {
-                "contacto_id": contacto_id,
-                "nivel_debil": niveles["DEBIL"],
-                "nivel_fuerte": niveles["FUERTE"],
-                "nivel_muy_fuerte": niveles["MUY_FUERTE"],
-            },
+            {"contacto_id": contacto_id, "alerta_encuesta_id": lluvia_fuerte_id},
         )
 
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
         client = TestClient(app)
 
-        respuesta = client.post(
+        respuesta = client.get("/api/telegram/reportes/alertas/6")
+
+        assert respuesta.status_code == 200
+        data = respuesta.json()
+        assert data["tipo_alerta_id"] == 6
+        assert data["nombre_alerta"] == "LLUVIAS"
+        assert data["total"] == 2
+        cantidades = {item["nombre"]: item["cantidad"] for item in data["opciones"]}
+        assert cantidades["LLUVIA FUERTE"] == 2
+        assert data["chart_url"].startswith("https://quickchart.io/chart?")
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593014{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+    get_settings_original = flujos.get_settings
+
+    try:
+        flujos.get_settings = lambda: type(
+            "SettingsStub",
+            (),
+            {"telegram_admin_user_ids": {chat_id}},
+        )()
+        _asegurar_catalogos_alertas(session)
+        _asegurar_tabla_eventos(session)
+        session.execute(text("DELETE FROM telegram_eventos"))
+        contacto_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                RETURNING id
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        ).scalar_one()
+        lluvia_fuerte_id = session.execute(
+            text(
+                """
+                SELECT id
+                FROM alerta_encuesta
+                WHERE tipo_alerta_id = 6
+                  AND nombre = 'LLUVIA FUERTE'
+                LIMIT 1
+                """
+            )
+        ).scalar_one()
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_eventos
+                    (contacto_id, tipo_alerta_id, alerta_encuesta_id, descripcion, foto_file_id, latitud, longitud)
+                VALUES
+                    (:contacto_id, 6, :alerta_encuesta_id, 'Lluvia fuerte', 'foto-1', -0.1806532, -78.4678382)
+                """
+            ),
+            {"contacto_id": contacto_id, "alerta_encuesta_id": lluvia_fuerte_id},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        sender = FakeTelegramSender()
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
+        client = TestClient(app)
+
+        menu = client.post(
             "/api/telegram/webhook",
             json={
                 "update_id": 100,
                 "message": {
                     "from": {"id": chat_id, "first_name": "GAD"},
                     "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
-                    "text": "/reporte_lluvia",
+                    "text": "/reportes",
                 },
             },
         )
 
-        assert respuesta.status_code == 200
-        data = respuesta.json()
-        assert data["estado"] == "REPORTE_LLUVIA_GENERADO"
-        assert "Total de reportes: 4" in data["mensaje"]
-        assert "- Debil: 1" in data["mensaje"]
-        assert "- Moderado: 0" in data["mensaje"]
-        assert "- Fuerte: 2" in data["mensaje"]
-        assert "- Muy fuerte: 1" in data["mensaje"]
-    finally:
-        app.dependency_overrides.clear()
-        session.close()
-        transaction.rollback()
-        connection.close()
-
-
-def test_endpoint_reporte_lluvia_devuelve_json_agrupado_por_intensidad() -> None:
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
-    telefono = f"+593014{uuid4().int % 1000000:06d}"
-    chat_id = -(uuid4().int % 1000000000)
-
-    try:
-        _asegurar_niveles(session)
-        session.execute(text("DELETE FROM telegram_barridos"))
-        contacto_id = session.execute(
-            text(
-                """
-                INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
-                VALUES
-                    (:telegram_user_id, :chat_id, :telefono, true)
-                RETURNING id
-                """
-            ),
-            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
-        ).scalar_one()
-        niveles = {
-            row["nombre"]: row["id"]
-            for row in session.execute(
-                text(
-                    """
-                    SELECT id, nombre
-                    FROM catalogo_niveles_evento
-                    WHERE nombre IN ('DEBIL', 'MODERADO', 'FUERTE', 'MUY_FUERTE')
-                    """
-                )
-            ).mappings()
-        }
-        session.execute(
-            text(
-                """
-                INSERT INTO telegram_barridos
-                    (contacto_id, nivel_id, latitud, longitud)
-                VALUES
-                    (:contacto_id, :nivel_moderado, -0.1806532, -78.4678382),
-                    (:contacto_id, :nivel_moderado, -0.1806532, -78.4678382),
-                    (:contacto_id, :nivel_muy_fuerte, -0.1806532, -78.4678382)
-                """
-            ),
-            {
-                "contacto_id": contacto_id,
-                "nivel_moderado": niveles["MODERADO"],
-                "nivel_muy_fuerte": niveles["MUY_FUERTE"],
-            },
-        )
-
-        def override_get_db() -> Generator[Session, None, None]:
-            yield session
-
-        app.dependency_overrides[get_db] = override_get_db
-        client = TestClient(app)
-
-        respuesta = client.get("/api/telegram/barridos/reporte-lluvia")
-
-        assert respuesta.status_code == 200
-        data = respuesta.json()
-        assert data["total"] == 3
-        cantidades = {item["nivel"]: item["cantidad"] for item in data["niveles"]}
-        assert cantidades == {
-            "DEBIL": 0,
-            "MODERADO": 2,
-            "FUERTE": 0,
-            "MUY_FUERTE": 1,
-        }
-    finally:
-        app.dependency_overrides.clear()
-        session.close()
-        transaction.rollback()
-        connection.close()
-
-
-def test_endpoint_envia_grafico_reporte_lluvia_por_telegram() -> None:
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
-    telefono = f"+593015{uuid4().int % 1000000:06d}"
-    chat_id = -(uuid4().int % 1000000000)
-
-    try:
-        _asegurar_niveles(session)
-        session.execute(text("DELETE FROM telegram_barridos"))
-        contacto_id = session.execute(
-            text(
-                """
-                INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
-                VALUES
-                    (:telegram_user_id, :chat_id, :telefono, true)
-                RETURNING id
-                """
-            ),
-            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
-        ).scalar_one()
-        nivel_id = session.execute(
-            text(
-                """
-                SELECT id
-                FROM catalogo_niveles_evento
-                WHERE nombre = 'FUERTE'
-                LIMIT 1
-                """
-            )
-        ).scalar_one()
-        session.execute(
-            text(
-                """
-                INSERT INTO telegram_barridos
-                    (contacto_id, nivel_id, latitud, longitud)
-                VALUES
-                    (:contacto_id, :nivel_id, -0.1806532, -78.4678382)
-                """
-            ),
-            {"contacto_id": contacto_id, "nivel_id": nivel_id},
-        )
-
-        def override_get_db() -> Generator[Session, None, None]:
-            yield session
-
-        app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_telegram_sender] = lambda: FakeTelegramSender()
-        client = TestClient(app)
-
-        respuesta = client.post(
-            "/api/telegram/barridos/reporte-lluvia/grafico/enviar",
-            json={"chat_id": chat_id, "titulo": "Reporte lluvia test"},
-        )
-
-        assert respuesta.status_code == 200
-        data = respuesta.json()
-        assert data["chat_id"] == chat_id
-        assert data["chart_url"].startswith("https://quickchart.io/chart?")
-        assert "Reporte+lluvia+test" in data["chart_url"]
-        assert data["telegram"]["result"]["photo"] == data["chart_url"]
-        assert data["telegram"]["result"]["caption"] == "Reporte de barridos de lluvia. Total: 1"
-    finally:
-        app.dependency_overrides.clear()
-        session.close()
-        transaction.rollback()
-        connection.close()
-
-
-def test_webhook_reporte_lluvia_grafico_envia_foto() -> None:
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
-    telefono = f"+593016{uuid4().int % 1000000:06d}"
-    chat_id = -(uuid4().int % 1000000000)
-
-    try:
-        _asegurar_niveles(session)
-        session.execute(text("DELETE FROM telegram_barridos"))
-        contacto_id = session.execute(
-            text(
-                """
-                INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
-                VALUES
-                    (:telegram_user_id, :chat_id, :telefono, true)
-                RETURNING id
-                """
-            ),
-            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
-        ).scalar_one()
-        nivel_id = session.execute(
-            text(
-                """
-                SELECT id
-                FROM catalogo_niveles_evento
-                WHERE nombre = 'DEBIL'
-                LIMIT 1
-                """
-            )
-        ).scalar_one()
-        session.execute(
-            text(
-                """
-                INSERT INTO telegram_barridos
-                    (contacto_id, nivel_id, latitud, longitud)
-                VALUES
-                    (:contacto_id, :nivel_id, -0.1806532, -78.4678382)
-                """
-            ),
-            {"contacto_id": contacto_id, "nivel_id": nivel_id},
-        )
-
-        def override_get_db() -> Generator[Session, None, None]:
-            yield session
-
-        app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
-        client = TestClient(app)
+        assert menu.status_code == 200
+        assert menu.json()["estado"] == "MENU_REPORTES"
+        assert sender.messages[-1]["text"] == "Seleccione el tipo de alerta del reporte que desea visualizar:"
+        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["callback_data"] == "REPORTE_ALERTA:6"
 
         respuesta = client.post(
             "/api/telegram/webhook",
             json={
                 "update_id": 110,
-                "message": {
+                "callback_query": {
+                    "id": "callback-reporte-alerta",
                     "from": {"id": chat_id, "first_name": "GAD"},
-                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
-                    "text": "/reporte_lluvia_grafico",
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "REPORTE_ALERTA:6",
                 },
             },
         )
 
         assert respuesta.status_code == 200
         data = respuesta.json()
-        assert data["estado"] == "REPORTE_LLUVIA_GRAFICO_ENVIADO"
-        assert data["mensaje"].startswith("https://quickchart.io/chart?")
+        assert data["estado"] == "REPORTE_ALERTA_ENVIADO"
+        assert data["mensaje"] == "Reporte generado para LLUVIAS."
+        assert "Reporte de alertas: LLUVIAS" in sender.messages[-1]["text"]
+        assert "- LLUVIA FUERTE: 1" in sender.messages[-1]["text"]
+        assert sender.photos[-1]["photo"].startswith("https://quickchart.io/chart?")
     finally:
+        flujos.get_settings = get_settings_original
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()

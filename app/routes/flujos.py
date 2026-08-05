@@ -6,10 +6,11 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.config import get_settings
 from app.models import (
     AlertaEncuesta,
     AlertaRecomendacion,
@@ -26,16 +27,14 @@ from app.schemas import (
     BarridoGuardadoRespuesta,
     CrearBoletinRequest,
     CrearSeguimientoEventoRequest,
-    EnviarReporteLluviaGraficoRequest,
-    EnviarReporteLluviaGraficoRespuesta,
     EnvioFlujoRespuesta,
     EventoRespuesta,
     FotoEventoRespuesta,
     MAPA_NIVELES_LLUVIAS,
     NivelLluvia,
-    NivelLluviaResumenRespuesta,
     RegistrarBarridoRequest,
-    ReporteLluviaRespuesta,
+    ReporteAlertaOpcionRespuesta,
+    ReporteAlertaRespuesta,
     RegistroFlujoRespuesta,
     SolicitarBarridoRequest,
     TelegramWebhookRespuesta,
@@ -50,7 +49,6 @@ TIPO_BARRIDO = "BARRIDO_GAD"
 TIPO_SEGUIMIENTO = "SEGUIMIENTO_EVENTO"
 TIPO_REGISTRO_TELEFONO = "REGISTRO_TELEFONO"
 TIPO_REPORTE_EVENTO = "REPORTE_EVENTO"
-TIPO_SCRIPT_AUTH = "SCRIPT_AUTH"
 FLUJO_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 FLUJO_REPORTE_EVENTO = "REPORTE_EVENTO"
 FLUJO_REPORTE_ALERTA = "REPORTE_ALERTA"
@@ -102,14 +100,9 @@ MENSAJE_ACCESO_NO_AUTORIZADO = (
     "\u00a1\u00a1Saludos cordiales!!"
 )
 CALLBACK_TIPO_ALERTA_PREFIX = "TIPO_ALERTA:"
+CALLBACK_REPORTE_ALERTA_PREFIX = "REPORTE_ALERTA:"
 CALLBACK_ALERTA_RIESGO_SI = "ALERTA_RIESGO:SI"
 CALLBACK_ALERTA_RIESGO_NO = "ALERTA_RIESGO:NO"
-ETIQUETAS_NIVELES_LLUVIA = {
-    NivelLluvia.debil.value: "Debil",
-    NivelLluvia.moderado.value: "Moderado",
-    NivelLluvia.fuerte.value: "Fuerte",
-    NivelLluvia.muy_fuerte.value: "Muy fuerte",
-}
 CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
 MENSAJE_MENU_SCRIPTS = "Seleccione el script que desea ejecutar:"
@@ -124,9 +117,7 @@ CALLBACK_SCRIPT_BARRIDO_CENIZA = "SCRIPT_BARRIDO_CENIZA"
 SCRIPT_BARRIDO_LLUVIA_TELEFONOS = ["+593984374917", "0987223658"]
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
 SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su ubicacion y nivel de lluvia."
-SCRIPT_ADMIN_TELEGRAM_USER_IDS = {6869758976}
-SCRIPT_PASSCODE = "Sngre.2026"
-SCRIPT_MAX_PASSCODE_INTENTOS = 3
+MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
 QUICKCHART_URL = "https://quickchart.io/chart"
 MEDIA_TYPE_POR_EXTENSION = {
     ".jpg": "image/jpeg",
@@ -448,6 +439,21 @@ def _teclado_menu_principal(db: Session) -> dict[str, Any]:
     }
 
 
+def _teclado_menu_reportes(db: Session) -> dict[str, Any]:
+    tipos_alerta = _tipos_alerta_activos(db)
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": tipo_alerta.descripcion,
+                    "callback_data": f"{CALLBACK_REPORTE_ALERTA_PREFIX}{tipo_alerta.id}",
+                }
+            ]
+            for tipo_alerta in tipos_alerta
+        ],
+    }
+
+
 def _encuestas_alerta_activas(db: Session, tipo_alerta_id: int) -> list[AlertaEncuesta]:
     return list(
         db.scalars(
@@ -551,6 +557,15 @@ def _mostrar_menu_scripts_si_es_posible(sender: TelegramSender | None, chat_id: 
         chat_id,
         MENSAJE_MENU_SCRIPTS,
         reply_markup=_teclado_menu_scripts(),
+    )
+
+
+def _mostrar_menu_reportes_si_es_posible(db: Session, sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(
+        sender,
+        chat_id,
+        MENSAJE_MENU_REPORTES,
+        reply_markup=_teclado_menu_reportes(db),
     )
 
 
@@ -673,102 +688,17 @@ def _es_comando_scripts(texto: str) -> bool:
     return normalizado.startswith("/scripts") or normalizado == "scripts"
 
 
-def _es_comando_reporte_lluvia(texto: str) -> bool:
+def _es_comando_reportes(texto: str) -> bool:
     normalizado = _texto_normalizado(texto)
-    return normalizado in {"/reporte_lluvia", "reporte lluvia"}
+    return normalizado.startswith("/reportes") or normalizado == "reportes"
 
 
-def _es_comando_reporte_lluvia_grafico(texto: str) -> bool:
-    normalizado = _texto_normalizado(texto)
-    return normalizado in {"/reporte_lluvia_grafico", "reporte lluvia grafico"}
+def _admin_telegram_user_ids() -> set[int]:
+    return set(get_settings().telegram_admin_user_ids)
 
 
-def _puede_ejecutar_scripts(telegram_user_id: int) -> bool:
-    return telegram_user_id in SCRIPT_ADMIN_TELEGRAM_USER_IDS
-
-
-def _iniciar_auth_scripts(db: Session, contacto: TelegramContacto, sender: TelegramSender | None) -> None:
-    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_SCRIPT_AUTH)
-    if registro is None:
-        registro = TelegramConsulta(
-            contacto_id=contacto.id,
-            usuario_id=contacto.usuario_id,
-            tipo_consulta=TIPO_SCRIPT_AUTH,
-            consulta="Autenticacion para ejecutar scripts",
-            parametros={"flujo": TIPO_SCRIPT_AUTH, "intentos": 0},
-            estado="PROCESANDO",
-        )
-        db.add(registro)
-    else:
-        parametros = dict(registro.parametros or {})
-        parametros["intentos"] = 0
-        registro.parametros = parametros
-        registro.estado = "PROCESANDO"
-    db.commit()
-    _responder_si_es_posible(sender, contacto.chat_id, "Ingrese el passcode para ejecutar scripts.")
-
-
-def _validar_passcode_scripts(
-    db: Session,
-    contacto: TelegramContacto,
-    texto: str,
-    sender: TelegramSender | None,
-) -> TelegramWebhookRespuesta | None:
-    registro = _consulta_activa_por_contacto_y_tipo(db, contacto.id, TIPO_SCRIPT_AUTH)
-    if registro is None:
-        return None
-
-    if texto.strip() != SCRIPT_PASSCODE:
-        parametros = dict(registro.parametros or {})
-        intentos = int(parametros.get("intentos") or 0) + 1
-        parametros["intentos"] = intentos
-        registro.parametros = parametros
-
-        if intentos >= SCRIPT_MAX_PASSCODE_INTENTOS:
-            registro.estado = "COMPLETADA"
-            registro.fecha_respuesta = datetime.now(timezone.utc)
-            registro.respuesta = {"autenticado": False, "intentos": intentos}
-            db.commit()
-            _responder_si_es_posible(
-                sender,
-                contacto.chat_id,
-                "Passcode incorrecto. Se alcanzo el maximo de intentos.",
-            )
-            return TelegramWebhookRespuesta(
-                estado="PASSCODE_SCRIPT_BLOQUEADO",
-                mensaje="Se alcanzo el maximo de intentos de passcode.",
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
-            )
-
-        db.commit()
-        restantes = SCRIPT_MAX_PASSCODE_INTENTOS - intentos
-        _responder_si_es_posible(
-            sender,
-            contacto.chat_id,
-            f"Passcode incorrecto. Intente nuevamente. Intentos restantes: {restantes}.",
-        )
-        return TelegramWebhookRespuesta(
-            estado="PASSCODE_SCRIPT_INVALIDO",
-            mensaje="Passcode incorrecto.",
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
-        )
-
-    registro.estado = "COMPLETADA"
-    registro.fecha_respuesta = datetime.now(timezone.utc)
-    registro.respuesta = {"autenticado": True}
-    db.commit()
-    _mostrar_menu_scripts_si_es_posible(sender, contacto.chat_id)
-    return TelegramWebhookRespuesta(
-        estado="MENU_SCRIPTS",
-        mensaje="Passcode validado. Se mostro el menu de scripts.",
-        contacto_id=contacto.id,
-        telefono=contacto.telefono,
-        chat_id=contacto.chat_id,
-    )
+def _es_administrador(telegram_user_id: int) -> bool:
+    return telegram_user_id in _admin_telegram_user_ids()
 
 
 def _es_opcion_reporte_barrido(texto: str) -> bool:
@@ -857,57 +787,97 @@ def _ejecutar_script_barrido_lluvia(
     return len(contactos), telefonos_faltantes
 
 
-def _obtener_reporte_lluvia(db: Session) -> ReporteLluviaRespuesta:
-    conteos = {nivel.value: 0 for nivel in NivelLluvia}
+def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRespuesta:
+    tipo_alerta = db.get(TipoAlerta, tipo_alerta_id)
+    if tipo_alerta is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tipo de alerta no encontrado.",
+        )
+
     rows = db.execute(
-        select(CatalogoNivelEvento.nombre, func.count(TelegramBarrido.id))
-        .join(TelegramBarrido, TelegramBarrido.nivel_id == CatalogoNivelEvento.id)
-        .where(TelegramBarrido.activo.is_(True))
-        .group_by(CatalogoNivelEvento.nombre)
+        select(
+            AlertaEncuesta.id,
+            AlertaEncuesta.nombre,
+            AlertaEncuesta.descripcion,
+            AlertaEncuesta.color,
+            func.count(TelegramEvento.id).label("cantidad"),
+        )
+        .outerjoin(
+            TelegramEvento,
+            and_(
+                TelegramEvento.alerta_encuesta_id == AlertaEncuesta.id,
+                TelegramEvento.activo.is_(True),
+            ),
+        )
+        .where(
+            AlertaEncuesta.tipo_alerta_id == tipo_alerta_id,
+            AlertaEncuesta.activo.is_(True),
+        )
+        .group_by(AlertaEncuesta.id, AlertaEncuesta.nombre, AlertaEncuesta.descripcion, AlertaEncuesta.color)
+        .order_by(AlertaEncuesta.orden)
     ).all()
-    for nombre, total in rows:
-        if nombre in conteos:
-            conteos[str(nombre)] = int(total)
-
-    return ReporteLluviaRespuesta(
-        total=sum(conteos.values()),
-        niveles=[
-            NivelLluviaResumenRespuesta(
-                nivel=nivel,
-                etiqueta=ETIQUETAS_NIVELES_LLUVIA[nivel.value],
-                cantidad=conteos[nivel.value],
-            )
-            for nivel in NivelLluvia
-        ],
+    opciones = [
+        ReporteAlertaOpcionRespuesta(
+            alerta_encuesta_id=int(alerta_encuesta_id),
+            nombre=str(nombre),
+            descripcion=descripcion,
+            color=color,
+            cantidad=int(cantidad),
+        )
+        for alerta_encuesta_id, nombre, descripcion, color, cantidad in rows
+    ]
+    reporte = ReporteAlertaRespuesta(
+        tipo_alerta_id=tipo_alerta.id,
+        nombre_alerta=tipo_alerta.descripcion,
+        total=sum(opcion.cantidad for opcion in opciones),
+        opciones=opciones,
+        chart_url="",
     )
+    return reporte.model_copy(update={"chart_url": _crear_url_grafico_reporte_alerta(reporte)})
 
 
-def _formatear_reporte_lluvia(reporte: ReporteLluviaRespuesta) -> str:
+def _formatear_reporte_alerta(reporte: ReporteAlertaRespuesta) -> str:
     lineas = [
-        "Reporte de barridos de lluvia",
+        f"Reporte de alertas: {reporte.nombre_alerta}",
         f"Total de reportes: {reporte.total}",
         "",
-        "Intensidad por tipo:",
+        "Nivel por tipo:",
     ]
-    for nivel in reporte.niveles:
-        lineas.append(f"- {nivel.etiqueta}: {nivel.cantidad}")
+    for opcion in reporte.opciones:
+        lineas.append(f"- {opcion.nombre}: {opcion.cantidad}")
     return "\n".join(lineas)
 
 
-def _crear_url_grafico_reporte_lluvia(
-    reporte: ReporteLluviaRespuesta,
-    titulo: str | None = None,
+def _color_grafico_alerta(color: str | None) -> str:
+    if not color:
+        return "#38bdf8"
+    colores = {
+        "rojo": "#ef4444",
+        "🔴": "#ef4444",
+        "naranja": "#fb923c",
+        "🟠": "#fb923c",
+        "amarillo": "#facc15",
+        "🟡": "#facc15",
+        "verde": "#22c55e",
+        "🟢": "#22c55e",
+    }
+    return colores.get(color.strip().lower(), "#38bdf8")
+
+
+def _crear_url_grafico_reporte_alerta(
+    reporte: ReporteAlertaRespuesta,
 ) -> str:
     chart_config = {
         "type": "bar",
         "data": {
-            "labels": [nivel.etiqueta for nivel in reporte.niveles],
+            "labels": [opcion.nombre for opcion in reporte.opciones],
             "datasets": [
                 {
                     "label": "Cantidad",
-                    "data": [nivel.cantidad for nivel in reporte.niveles],
-                    "backgroundColor": ["#7dd3fc", "#38bdf8", "#fb923c", "#ef4444"],
-                    "borderColor": ["#0284c7", "#0369a1", "#ea580c", "#b91c1c"],
+                    "data": [opcion.cantidad for opcion in reporte.opciones],
+                    "backgroundColor": [_color_grafico_alerta(opcion.color) for opcion in reporte.opciones],
+                    "borderColor": "#111827",
                     "borderWidth": 1,
                 }
             ],
@@ -915,7 +885,7 @@ def _crear_url_grafico_reporte_lluvia(
         "options": {
             "title": {
                 "display": True,
-                "text": titulo or "Reporte de barridos de lluvia",
+                "text": f"Reporte de alertas: {reporte.nombre_alerta}",
                 "fontSize": 18,
             },
             "legend": {"display": False},
@@ -950,20 +920,19 @@ def _crear_url_grafico_reporte_lluvia(
     return f"{QUICKCHART_URL}?{query}"
 
 
-def _enviar_grafico_reporte_lluvia(
+def _enviar_reporte_alerta_telegram(
     db: Session,
     sender: TelegramSender,
     chat_id: int,
-    titulo: str | None = None,
-) -> EnviarReporteLluviaGraficoRespuesta:
-    reporte = _obtener_reporte_lluvia(db)
-    chart_url = _crear_url_grafico_reporte_lluvia(reporte, titulo)
-    caption = f"Reporte de barridos de lluvia. Total: {reporte.total}"
+    tipo_alerta_id: int,
+) -> ReporteAlertaRespuesta:
+    reporte = _obtener_reporte_alerta(db, tipo_alerta_id)
+    _responder_si_es_posible(sender, chat_id, _formatear_reporte_alerta(reporte))
     try:
-        telegram_response = sender.send_photo(
+        sender.send_photo(
             chat_id=chat_id,
-            photo=chart_url,
-            caption=caption,
+            photo=reporte.chart_url,
+            caption=f"Grafico de alertas: {reporte.nombre_alerta}",
         )
     except TelegramDeliveryError as exc:
         raise HTTPException(
@@ -971,11 +940,7 @@ def _enviar_grafico_reporte_lluvia(
             detail="No se pudo enviar el grafico por Telegram.",
         ) from exc
 
-    return EnviarReporteLluviaGraficoRespuesta(
-        chat_id=chat_id,
-        chart_url=chart_url,
-        telegram=telegram_response,
-    )
+    return reporte
 
 
 def _extraer_foto_de_mensaje(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -1608,6 +1573,42 @@ def _recibir_callback_menu_principal(
             hay_personas_en_riesgo=data == CALLBACK_ALERTA_RIESGO_SI,
         )
 
+    if isinstance(data, str) and data.startswith(CALLBACK_REPORTE_ALERTA_PREFIX):
+        if not _es_administrador(int(telegram_user_id)):
+            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para generar reportes.")
+            return TelegramWebhookRespuesta(
+                estado="REPORTE_NO_AUTORIZADO",
+                mensaje="El usuario no tiene permisos para generar reportes.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        if sender is None:
+            return TelegramWebhookRespuesta(
+                estado="TELEGRAM_NO_CONFIGURADO",
+                mensaje="TELEGRAM_BOT_TOKEN no esta configurado.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        try:
+            tipo_alerta_id = int(data.removeprefix(CALLBACK_REPORTE_ALERTA_PREFIX))
+        except ValueError:
+            tipo_alerta_id = 0
+        reporte = _enviar_reporte_alerta_telegram(
+            db=db,
+            sender=sender,
+            chat_id=int(chat_id),
+            tipo_alerta_id=tipo_alerta_id,
+        )
+        return TelegramWebhookRespuesta(
+            estado="REPORTE_ALERTA_ENVIADO",
+            mensaje=f"Reporte generado para {reporte.nombre_alerta}.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
     if isinstance(data, str) and data.startswith(CALLBACK_TIPO_ALERTA_PREFIX):
         try:
             tipo_alerta_id = int(data.removeprefix(CALLBACK_TIPO_ALERTA_PREFIX))
@@ -1642,7 +1643,7 @@ def _recibir_callback_menu_principal(
             chat_id=contacto.chat_id,
         )
 
-    if str(data).startswith("SCRIPT_") and not _puede_ejecutar_scripts(int(telegram_user_id)):
+    if str(data).startswith("SCRIPT_") and not _es_administrador(int(telegram_user_id)):
         _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ejecutar scripts.")
         return TelegramWebhookRespuesta(
             estado="SCRIPT_NO_AUTORIZADO",
@@ -1873,7 +1874,7 @@ def recibir_webhook_telegram(
                 mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
                 chat_id=int(chat_id),
             )
-        if not _puede_ejecutar_scripts(int(telegram_user_id)):
+        if not _es_administrador(int(telegram_user_id)):
             _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para ejecutar scripts.")
             return TelegramWebhookRespuesta(
                 estado="SCRIPT_NO_AUTORIZADO",
@@ -1882,16 +1883,16 @@ def recibir_webhook_telegram(
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
-        _iniciar_auth_scripts(db, contacto, sender)
+        _mostrar_menu_scripts_si_es_posible(sender, contacto.chat_id)
         return TelegramWebhookRespuesta(
-            estado="ESPERANDO_PASSCODE_SCRIPT",
-            mensaje="Se solicito el passcode para ejecutar scripts.",
+            estado="MENU_SCRIPTS",
+            mensaje="Se mostro el menu de scripts.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
         )
 
-    if _es_comando_reporte_lluvia(texto):
+    if _es_comando_reportes(texto):
         contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
         if contacto is None:
             _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
@@ -1900,49 +1901,19 @@ def recibir_webhook_telegram(
                 mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
                 chat_id=int(chat_id),
             )
-        reporte = _obtener_reporte_lluvia(db)
-        texto_reporte = _formatear_reporte_lluvia(reporte)
-        _responder_si_es_posible(sender, int(chat_id), texto_reporte)
-        return TelegramWebhookRespuesta(
-            estado="REPORTE_LLUVIA_GENERADO",
-            mensaje=texto_reporte,
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
-        )
-
-    contacto_auth_scripts = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
-    if contacto_auth_scripts and _puede_ejecutar_scripts(int(telegram_user_id)):
-        respuesta_auth = _validar_passcode_scripts(db, contacto_auth_scripts, texto, sender)
-        if respuesta_auth is not None:
-            return respuesta_auth
-
-    if _es_comando_reporte_lluvia_grafico(texto):
-        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
-        if contacto is None:
-            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+        if not _es_administrador(int(telegram_user_id)):
+            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para generar reportes.")
             return TelegramWebhookRespuesta(
-                estado="ACCESO_NO_AUTORIZADO",
-                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
-                chat_id=int(chat_id),
-            )
-        if sender is None:
-            return TelegramWebhookRespuesta(
-                estado="TELEGRAM_NO_CONFIGURADO",
-                mensaje="TELEGRAM_BOT_TOKEN no esta configurado.",
+                estado="REPORTE_NO_AUTORIZADO",
+                mensaje="El usuario no tiene permisos para generar reportes.",
                 contacto_id=contacto.id,
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
-        resultado = _enviar_grafico_reporte_lluvia(
-            db=db,
-            sender=sender,
-            chat_id=int(chat_id),
-            titulo="Reporte de barridos de lluvia",
-        )
+        _mostrar_menu_reportes_si_es_posible(db, sender, int(chat_id))
         return TelegramWebhookRespuesta(
-            estado="REPORTE_LLUVIA_GRAFICO_ENVIADO",
-            mensaje=resultado.chart_url,
+            estado="MENU_REPORTES",
+            mensaje="Se mostro el menu de reportes.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -2619,35 +2590,16 @@ def registrar_respuesta_barrido(
 
 
 @router.get(
-    "/barridos/reporte-lluvia",
-    response_model=ReporteLluviaRespuesta,
-    tags=["barridos"],
-    summary="Obtener resumen de barridos de lluvia por intensidad",
+    "/reportes/alertas/{tipo_alerta_id}",
+    response_model=ReporteAlertaRespuesta,
+    tags=["reportes"],
+    summary="Obtener reporte de alertas por tipo de alerta",
 )
-def obtener_reporte_lluvia(
+def obtener_reporte_alerta(
+    tipo_alerta_id: int,
     db: Session = Depends(get_db),
-) -> ReporteLluviaRespuesta:
-    return _obtener_reporte_lluvia(db)
-
-
-@router.post(
-    "/barridos/reporte-lluvia/grafico/enviar",
-    response_model=EnviarReporteLluviaGraficoRespuesta,
-    tags=["barridos"],
-    summary="Enviar grafico de reporte de lluvia por Telegram",
-)
-def enviar_grafico_reporte_lluvia(
-    payload: EnviarReporteLluviaGraficoRequest,
-    db: Session = Depends(get_db),
-    sender: TelegramSender = Depends(get_telegram_sender),
-) -> EnviarReporteLluviaGraficoRespuesta:
-    chat_id = payload.chat_id or next(iter(SCRIPT_ADMIN_TELEGRAM_USER_IDS))
-    return _enviar_grafico_reporte_lluvia(
-        db=db,
-        sender=sender,
-        chat_id=chat_id,
-        titulo=payload.titulo,
-    )
+) -> ReporteAlertaRespuesta:
+    return _obtener_reporte_alerta(db, tipo_alerta_id)
 
 
 @router.get(

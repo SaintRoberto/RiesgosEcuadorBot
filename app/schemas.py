@@ -123,29 +123,20 @@ class BarridoGuardadoRespuesta(BaseModel):
     longitud: float
 
 
-class NivelLluviaResumenRespuesta(BaseModel):
-    nivel: NivelLluvia
-    etiqueta: str
+class ReporteAlertaOpcionRespuesta(BaseModel):
+    alerta_encuesta_id: int
+    nombre: str
+    descripcion: str | None = None
+    color: str | None = None
     cantidad: int
 
 
-class ReporteLluviaRespuesta(BaseModel):
+class ReporteAlertaRespuesta(BaseModel):
+    tipo_alerta_id: int
+    nombre_alerta: str
     total: int
-    niveles: list[NivelLluviaResumenRespuesta]
-
-
-class EnviarReporteLluviaGraficoRequest(BaseModel):
-    chat_id: int | None = Field(
-        default=None,
-        description="Chat de Telegram destino. Si se omite, se usa el admin configurado.",
-    )
-    titulo: str | None = Field(default=None, max_length=120)
-
-
-class EnviarReporteLluviaGraficoRespuesta(BaseModel):
-    chat_id: int
+    opciones: list[ReporteAlertaOpcionRespuesta]
     chart_url: str
-    telegram: dict[str, Any]
 
 
 class TelegramWebhookRespuesta(BaseModel):
