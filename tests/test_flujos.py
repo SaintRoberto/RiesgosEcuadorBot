@@ -976,16 +976,17 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
     chat_id_admin = -(uuid4().int % 1000000000)
     chat_id_1 = -(uuid4().int % 1000000000)
     chat_id_2 = -(uuid4().int % 1000000000)
-    telefonos_originales = flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS
+    telefono_admin = f"+593099{uuid4().int % 1000000:06d}"
+    telefono_sin_telegram = f"+593099{uuid4().int % 1000000:06d}"
     get_settings_original = flujos.get_settings
 
     try:
-        flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS = [telefono_1, telefono_2]
         flujos.get_settings = lambda: type(
             "SettingsStub",
             (),
             {"telegram_admin_user_ids": {chat_id_admin}},
         )()
+        session.execute(text("UPDATE telegram_contactos SET activo = false"))
         session.execute(
             text(
                 """
@@ -994,19 +995,21 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
                 VALUES
                     (:telegram_user_id_admin, :chat_id_admin, :telefono_admin, true),
                     (:telegram_user_id_1, :chat_id_1, :telefono_1, true),
-                    (:telegram_user_id_2, :chat_id_2, :telefono_2, true)
+                    (:telegram_user_id_2, :chat_id_2, :telefono_2, true),
+                    (0, 0, :telefono_sin_telegram, true)
                 """
             ),
             {
                 "telegram_user_id_admin": chat_id_admin,
                 "chat_id_admin": chat_id_admin,
-                "telefono_admin": f"+593099{uuid4().int % 1000000:06d}",
+                "telefono_admin": telefono_admin,
                 "telegram_user_id_1": chat_id_1,
                 "chat_id_1": chat_id_1,
                 "telefono_1": telefono_1,
                 "telegram_user_id_2": chat_id_2,
                 "chat_id_2": chat_id_2,
                 "telefono_2": telefono_2,
+                "telefono_sin_telegram": telefono_sin_telegram,
             },
         )
 
@@ -1054,17 +1057,34 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
                 SELECT count(*)
                 FROM telegram_consultas tc
                 JOIN telegram_contactos c ON c.id = tc.contacto_id
-                WHERE c.telefono IN (:telefono_1, :telefono_2)
+                WHERE c.telefono IN (:telefono_admin, :telefono_1, :telefono_2)
                   AND tc.tipo_consulta = 'BARRIDO_GAD'
                   AND tc.estado = 'PROCESANDO'
                   AND tc.codigo = 'BARRIDO-AUTO'
                 """
             ),
-            {"telefono_1": telefono_1, "telefono_2": telefono_2},
+            {
+                "telefono_admin": telefono_admin,
+                "telefono_1": telefono_1,
+                "telefono_2": telefono_2,
+            },
         ).scalar_one()
-        assert total == 2
+        assert total == 3
+
+        sin_telegram = session.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM telegram_consultas tc
+                JOIN telegram_contactos c ON c.id = tc.contacto_id
+                WHERE c.telefono = :telefono
+                  AND tc.tipo_consulta = 'BARRIDO_GAD'
+                """
+            ),
+            {"telefono": telefono_sin_telegram},
+        ).scalar_one()
+        assert sin_telegram == 0
     finally:
-        flujos.SCRIPT_BARRIDO_LLUVIA_TELEFONOS = telefonos_originales
         flujos.get_settings = get_settings_original
         app.dependency_overrides.clear()
         session.close()

@@ -128,7 +128,6 @@ CALLBACK_SCRIPT_BARRIDO_LLUVIA = "SCRIPT_BARRIDO_LLUVIA"
 CALLBACK_SCRIPT_BARRIDO_RIOS = "SCRIPT_BARRIDO_RIOS"
 CALLBACK_SCRIPT_BARRIDO_SISMOS = "SCRIPT_BARRIDO_SISMOS"
 CALLBACK_SCRIPT_BARRIDO_CENIZA = "SCRIPT_BARRIDO_CENIZA"
-SCRIPT_BARRIDO_LLUVIA_TELEFONOS = ["+593984374917", "0987223658"]
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
 SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su ubicacion y nivel de lluvia."
 MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
@@ -786,18 +785,19 @@ def _iniciar_reporte_barrido(
 def _ejecutar_script_barrido_lluvia(
     db: Session,
     sender: TelegramSender | None,
-) -> tuple[int, list[str]]:
-    telefonos = list(dict.fromkeys(SCRIPT_BARRIDO_LLUVIA_TELEFONOS))
+) -> int:
     contactos = list(
         db.scalars(
             select(TelegramContacto).where(
-                TelegramContacto.telefono.in_(telefonos),
                 TelegramContacto.activo.is_(True),
+                TelegramContacto.telefono.is_not(None),
+                TelegramContacto.telegram_user_id.is_not(None),
+                TelegramContacto.telegram_user_id != 0,
+                TelegramContacto.chat_id.is_not(None),
+                TelegramContacto.chat_id != 0,
             )
         )
     )
-    telefonos_encontrados = {contacto.telefono for contacto in contactos}
-    telefonos_faltantes = [telefono for telefono in telefonos if telefono not in telefonos_encontrados]
     fecha_barrido = date.today()
     for contacto in contactos:
         _iniciar_reporte_barrido(
@@ -808,7 +808,7 @@ def _ejecutar_script_barrido_lluvia(
             mensaje=SCRIPT_BARRIDO_LLUVIA_MENSAJE,
             fecha_barrido=fecha_barrido,
         )
-    return len(contactos), telefonos_faltantes
+    return len(contactos)
 
 
 def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRespuesta:
@@ -1687,10 +1687,8 @@ def _recibir_callback_menu_principal(
     if data == CALLBACK_REPORTE_EVENTO:
         return _seleccionar_reporte_evento(db, contacto, sender)
     if data == CALLBACK_SCRIPT_BARRIDO_LLUVIA:
-        total, faltantes = _ejecutar_script_barrido_lluvia(db, sender)
+        total = _ejecutar_script_barrido_lluvia(db, sender)
         mensaje = f"Script de barridos lluvia ejecutado. Solicitudes enviadas: {total}."
-        if faltantes:
-            mensaje = f"{mensaje} Telefonos no encontrados o inactivos: {', '.join(faltantes)}."
         _responder_si_es_posible(sender, int(chat_id), mensaje)
         return TelegramWebhookRespuesta(
             estado="SCRIPT_BARRIDO_LLUVIA_EJECUTADO",
