@@ -521,7 +521,7 @@ def _teclado_menu_scripts(db: Session) -> dict[str, Any]:
         "inline_keyboard": [
             [
                 {
-                    "text": f"Ejecutar script de barrido de {tipo_alerta.descripcion.lower()}",
+                    "text": f"Barrido de {tipo_alerta.descripcion.lower()}",
                     "callback_data": f"{CALLBACK_SCRIPT_ALERTA_PREFIX}{tipo_alerta.id}",
                 }
             ]
