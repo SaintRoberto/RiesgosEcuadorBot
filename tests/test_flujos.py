@@ -1055,8 +1055,12 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         )
         assert menu.status_code == 200
         assert menu.json()["estado"] == "MENU_SCRIPTS"
-        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][0][0]["text"] == "CA\u00cdDA DE CENIZA"
-        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["text"] == "LLUVIAS"
+        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][0][0]["text"] == (
+            "Ejecutar script de barrido de ca\u00edda de ceniza"
+        )
+        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["text"] == (
+            "Ejecutar script de barrido de lluvias"
+        )
         assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["callback_data"] == "SCRIPT_ALERTA:6"
 
         ejecucion = client.post(
