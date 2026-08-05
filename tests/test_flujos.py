@@ -274,6 +274,7 @@ def _client_con_contacto() -> Generator[tuple[TestClient, str], None, None]:
 
     try:
         _asegurar_niveles(session)
+        _asegurar_catalogos_alertas(session)
         session.execute(
             text(
                 """
@@ -633,6 +634,9 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         )
         assert ubicacion.status_code == 200
         assert ubicacion.json()["estado"] == "UBICACION_RECIBIDA"
+        assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
+        assert "LLUVIA MUY FUERTE" in sender.polls[-1]["poll"]["options"][0]["text"]
+        assert "LLUVIA FUERTE" in sender.polls[-1]["poll"]["options"][1]["text"]
 
         nivel = client.post(
             "/api/telegram/webhook",
@@ -641,7 +645,7 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
                 "poll_answer": {
                     "poll_id": "poll-test",
                     "user": {"id": chat_id, "first_name": "GAD"},
-                    "option_ids": [3],
+                    "option_ids": [1],
                 },
             },
         )
@@ -652,15 +656,16 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         row = session.execute(
             text(
                 """
-                SELECT b.nivel_id, b.latitud, b.longitud
+                SELECT n.nombre AS nivel, b.latitud, b.longitud
                 FROM telegram_barridos b
                 JOIN telegram_contactos c ON c.id = b.contacto_id
+                JOIN catalogo_niveles_evento n ON n.id = b.nivel_id
                 WHERE c.telefono = :telefono
                 """
             ),
             {"telefono": telefono},
         ).mappings().one()
-        assert row["nivel_id"] == 4
+        assert row["nivel"] == "FUERTE"
         assert float(row["latitud"]) == -0.1806532
         assert float(row["longitud"]) == -78.4678382
     finally:

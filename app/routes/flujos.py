@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any
@@ -78,13 +79,6 @@ PATRON_EMOJI = re.compile(
     "\u2600-\u27bf"
     "]"
 )
-OPCIONES_ENCUESTA_LLUVIA = ["Debil", "Moderado", "Fuerte", "Muy fuerte"]
-MAPA_OPCIONES_ENCUESTA_LLUVIA = {
-    0: NivelLluvia.debil,
-    1: NivelLluvia.moderado,
-    2: NivelLluvia.fuerte,
-    3: NivelLluvia.muy_fuerte,
-}
 MENSAJE_SELECCION_NIVEL_LLUVIA = (
     "Ubicacion recibida. Ahora seleccione el nivel de lluvia:\n\n"
     "1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte"
@@ -521,7 +515,7 @@ def _teclado_menu_scripts(db: Session) -> dict[str, Any]:
         "inline_keyboard": [
             [
                 {
-                    "text": f"Barrido de {tipo_alerta.descripcion.lower()}",
+                    "text": f"Ejecutar script de barrido de {tipo_alerta.descripcion.lower()}",
                     "callback_data": f"{CALLBACK_SCRIPT_ALERTA_PREFIX}{tipo_alerta.id}",
                 }
             ]
@@ -685,6 +679,11 @@ def _texto_normalizado(texto: str) -> str:
 
 def _contiene_emoji(texto: str) -> bool:
     return PATRON_EMOJI.search(texto) is not None
+
+
+def _normalizar_texto_catalogo(texto: str) -> str:
+    sin_acentos = unicodedata.normalize("NFKD", texto)
+    return "".join(caracter for caracter in sin_acentos if not unicodedata.combining(caracter)).upper()
 
 
 def _es_inicio_o_menu(texto: str) -> bool:
@@ -1288,6 +1287,8 @@ def _guardar_foto_y_finalizar_alerta(
     encuesta = parametros.get("encuesta") or {}
     personas_en_riesgo = bool(parametros.get("personas_en_riesgo"))
     cantidad_personas_riesgo = int(parametros.get("cantidad_personas_riesgo") or 0)
+    latitud = float(ubicacion["latitud"])
+    longitud = float(ubicacion["longitud"])
 
     evento = TelegramEvento(
         contacto_id=contacto.id,
@@ -1298,8 +1299,8 @@ def _guardar_foto_y_finalizar_alerta(
         cantidad_personas_riesgo=cantidad_personas_riesgo,
         foto_file_id=str(foto["file_id"]),
         foto_file_unique_id=foto.get("file_unique_id"),
-        latitud=Decimal(str(ubicacion["latitud"])),
-        longitud=Decimal(str(ubicacion["longitud"])),
+        latitud=Decimal(str(latitud)),
+        longitud=Decimal(str(longitud)),
     )
     db.add(evento)
     registro.parametros = parametros
@@ -1373,20 +1374,50 @@ def _seleccionar_reporte_evento(
     )
 
 
-def _enviar_encuesta_lluvia_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
+def _nivel_lluvia_desde_opcion_alerta(opcion: AlertaEncuesta) -> NivelLluvia | None:
+    nombre = _normalizar_texto_catalogo(opcion.nombre)
+    if "MUY FUERTE" in nombre:
+        return NivelLluvia.muy_fuerte
+    if "FUERTE" in nombre:
+        return NivelLluvia.fuerte
+    if "MODERAD" in nombre:
+        return NivelLluvia.moderado
+    if "DEBIL" in nombre or "LEVE" in nombre:
+        return NivelLluvia.debil
+    return None
+
+
+def _enviar_encuesta_lluvia_si_es_posible(
+    db: Session,
+    sender: TelegramSender | None,
+    chat_id: int,
+    registro: TelegramConsulta,
+) -> None:
     if sender is None:
         return
+    opciones = _encuestas_alerta_activas(db, TIPO_ALERTA_LLUVIAS_ID)
+    if not opciones:
+        _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para lluvias.")
+        return
+    parametros = dict(registro.parametros or {})
+    parametros["encuesta_lluvia_opciones"] = [opcion.id for opcion in opciones]
+    registro.parametros = parametros
+    db.commit()
     try:
         sender.send_poll(
             chat_id=chat_id,
-            question="Seleccione el nivel de lluvia",
-            options=OPCIONES_ENCUESTA_LLUVIA,
+            question="Ingrese el NIVEL de alerta que usted visualiza:",
+            options=[_texto_opcion_encuesta_alerta(opcion) for opcion in opciones],
         )
     except TelegramDeliveryError:
         _responder_si_es_posible(sender, chat_id, MENSAJE_SELECCION_NIVEL_LLUVIA)
 
 
-def _nivel_desde_respuesta_encuesta(poll_answer: dict[str, Any]) -> NivelLluvia | None:
+def _nivel_desde_respuesta_encuesta(
+    db: Session,
+    registro: TelegramConsulta,
+    poll_answer: dict[str, Any],
+) -> tuple[NivelLluvia, AlertaEncuesta] | None:
     option_ids = poll_answer.get("option_ids")
     if not isinstance(option_ids, list) or not option_ids:
         return None
@@ -1394,7 +1425,16 @@ def _nivel_desde_respuesta_encuesta(poll_answer: dict[str, Any]) -> NivelLluvia 
         option_id = int(option_ids[0])
     except (TypeError, ValueError):
         return None
-    return MAPA_OPCIONES_ENCUESTA_LLUVIA.get(option_id)
+    opcion_ids = (registro.parametros or {}).get("encuesta_lluvia_opciones") or []
+    if option_id < 0 or option_id >= len(opcion_ids):
+        return None
+    opcion = db.get(AlertaEncuesta, int(opcion_ids[option_id]))
+    if opcion is None or not opcion.activo or opcion.tipo_alerta_id != TIPO_ALERTA_LLUVIAS_ID:
+        return None
+    nivel = _nivel_lluvia_desde_opcion_alerta(opcion)
+    if nivel is None:
+        return None
+    return nivel, opcion
 
 
 def _recibir_respuesta_encuesta_lluvia(
@@ -1410,13 +1450,6 @@ def _recibir_respuesta_encuesta_lluvia(
             detail="La respuesta de encuesta no contiene poll_answer.user.id.",
         )
 
-    nivel = _nivel_desde_respuesta_encuesta(poll_answer)
-    if nivel is None:
-        return TelegramWebhookRespuesta(
-            estado="ENCUESTA_IGNORADA",
-            mensaje="La respuesta de encuesta no contiene una opcion valida.",
-        )
-
     contacto = _contacto_por_telegram_user_id(db, int(telegram_user_id))
     if contacto is None:
         return TelegramWebhookRespuesta(
@@ -1425,6 +1458,24 @@ def _recibir_respuesta_encuesta_lluvia(
         )
 
     registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
+    if registro is None:
+        return TelegramWebhookRespuesta(
+            estado="ENCUESTA_IGNORADA",
+            mensaje="No existe un reporte de barrido activo para esta encuesta.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+    nivel_opcion = _nivel_desde_respuesta_encuesta(db, registro, poll_answer)
+    if nivel_opcion is None:
+        return TelegramWebhookRespuesta(
+            estado="ENCUESTA_IGNORADA",
+            mensaje="La respuesta de encuesta no contiene una opcion valida.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+    nivel, opcion_alerta = nivel_opcion
     ubicacion = (registro.parametros or {}).get("ubicacion_pendiente") if registro else None
     if not ubicacion:
         _responder_si_es_posible(
@@ -1440,7 +1491,6 @@ def _recibir_respuesta_encuesta_lluvia(
             chat_id=contacto.chat_id,
         )
 
-    option_id = int(poll_answer["option_ids"][0])
     registro, barrido, nivel_evento = _guardar_barrido(
         db=db,
         contacto=contacto,
@@ -1448,7 +1498,7 @@ def _recibir_respuesta_encuesta_lluvia(
         latitud=float(ubicacion["latitud"]),
         longitud=float(ubicacion["longitud"]),
         registro=registro,
-        observacion=f"Nivel recibido por encuesta Telegram: {option_id + 1}",
+        observacion=f"Nivel recibido por encuesta Telegram: {opcion_alerta.nombre}",
     )
     _responder_si_es_posible(
         sender,
@@ -2244,7 +2294,7 @@ def recibir_webhook_telegram(
         registro.estado = "PROCESANDO"
         db.commit()
         db.refresh(registro)
-        _enviar_encuesta_lluvia_si_es_posible(sender, int(chat_id))
+        _enviar_encuesta_lluvia_si_es_posible(db, sender, int(chat_id), registro)
         return TelegramWebhookRespuesta(
             estado="UBICACION_RECIBIDA",
             mensaje="Ubicacion guardada temporalmente para el barrido.",
