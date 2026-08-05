@@ -320,6 +320,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/tipo-alertas/{tipo_alerta_id}/encuesta" in paths
     assert "/api/telegram/alerta-recomendaciones" in paths
     assert "/api/telegram/tipo-alertas/{tipo_alerta_id}/recomendaciones" in paths
+    assert "/api/telegram/eventos" in paths
     assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
     assert "/api/telegram/eventos/seguimientos" in paths
@@ -1761,6 +1762,101 @@ def test_endpoint_lista_fotos_eventos() -> None:
         assert item["descripcion"] == "Evento listado"
         assert item["foto_file_unique_id"] == "foto-listada-unique"
         assert item["foto_url"].endswith(f"/api/telegram/eventos/{evento_id}/foto")
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593010{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_tipo_alertas(session)
+        _asegurar_tabla_eventos(session)
+        contacto_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                RETURNING id
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        ).scalar_one()
+        evento_id = session.execute(
+            text(
+                """
+                INSERT INTO telegram_eventos
+                    (
+                        contacto_id,
+                        tipo_alerta_id,
+                        descripcion,
+                        cantidad_personas_riesgo,
+                        foto_file_id,
+                        foto_file_unique_id,
+                        latitud,
+                        longitud,
+                        fecha_reporte
+                    )
+                VALUES
+                    (
+                        :contacto_id,
+                        6,
+                        :descripcion,
+                        15,
+                        :foto_file_id,
+                        :foto_file_unique_id,
+                        :latitud,
+                        :longitud,
+                        now()
+                    )
+                RETURNING id
+                """
+            ),
+            {
+                "contacto_id": contacto_id,
+                "descripcion": "Lluvia fuerte en la comunidad.",
+                "foto_file_id": "foto-evento",
+                "foto_file_unique_id": "foto-evento-unique",
+                "latitud": -0.1806532,
+                "longitud": -78.4678382,
+            },
+        ).scalar_one()
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+        client = TestClient(app)
+
+        respuesta = client.get("/api/telegram/eventos")
+
+        assert respuesta.status_code == 200
+        data = respuesta.json()
+        item = next(evento for evento in data if evento["id"] == evento_id)
+        assert item["contacto_id"] == contacto_id
+        assert item["tipo_alerta_id"] == 6
+        assert item["nombre_alerta"] == "LLUVIAS"
+        assert item["descripcion"] == "Lluvia fuerte en la comunidad."
+        assert item["cantidad_personas_riesgo"] == 15
+        assert item["fecha_reporte"][2] == "/"
+        assert item["fecha_reporte"][5] == "/"
+        assert item["fecha_reporte"][10] == " "
+        assert item["fecha_reporte"][13] == ":"
+        assert item["foto_url"].endswith(f"/api/telegram/eventos/{evento_id}/foto")
+        assert "activo" not in item
+        assert "fecha_creacion" not in item
+        assert "personas_en_riesgo" not in item
+        assert "foto_file_id" not in item
+        assert "foto_file_unique_id" not in item
     finally:
         app.dependency_overrides.clear()
         session.close()

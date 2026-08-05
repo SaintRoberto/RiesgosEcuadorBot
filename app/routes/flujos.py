@@ -29,6 +29,7 @@ from app.schemas import (
     EnviarReporteLluviaGraficoRequest,
     EnviarReporteLluviaGraficoRespuesta,
     EnvioFlujoRespuesta,
+    EventoRespuesta,
     FotoEventoRespuesta,
     MAPA_NIVELES_LLUVIAS,
     NivelLluvia,
@@ -149,6 +150,10 @@ def _media_type_desde_file_path(file_path: str) -> str:
         if path.endswith(extension):
             return media_type
     return "application/octet-stream"
+
+
+def _formatear_fecha_reporte(fecha_reporte: datetime) -> str:
+    return fecha_reporte.strftime("%d/%m/%Y %H:%M")
 
 
 def _contactos_activos_por_telefono(db: Session, telefonos: list[str]) -> list[TelegramContacto]:
@@ -2643,6 +2648,39 @@ def enviar_grafico_reporte_lluvia(
         chat_id=chat_id,
         titulo=payload.titulo,
     )
+
+
+@router.get(
+    "/eventos",
+    response_model=list[EventoRespuesta],
+    tags=["eventos"],
+    summary="Listar reportes de eventos",
+)
+def listar_eventos(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> list[EventoRespuesta]:
+    filas = db.execute(
+        select(TelegramEvento, TipoAlerta.descripcion.label("nombre_alerta"))
+        .outerjoin(TipoAlerta, TipoAlerta.id == TelegramEvento.tipo_alerta_id)
+        .order_by(TelegramEvento.fecha_reporte.desc())
+    ).all()
+    return [
+        EventoRespuesta(
+            id=evento.id,
+            contacto_id=evento.contacto_id,
+            tipo_alerta_id=evento.tipo_alerta_id,
+            nombre_alerta=nombre_alerta,
+            alerta_encuesta_id=evento.alerta_encuesta_id,
+            descripcion=evento.descripcion,
+            cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
+            latitud=float(evento.latitud),
+            longitud=float(evento.longitud),
+            fecha_reporte=_formatear_fecha_reporte(evento.fecha_reporte),
+            foto_url=str(request.url_for("obtener_foto_evento", evento_id=evento.id)),
+        )
+        for evento, nombre_alerta in filas
+    ]
 
 
 @router.get(

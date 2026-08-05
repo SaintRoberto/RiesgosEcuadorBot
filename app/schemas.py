@@ -156,6 +156,20 @@ class TelegramWebhookRespuesta(BaseModel):
     chat_id: int | None = None
 
 
+class EventoRespuesta(BaseModel):
+    id: int
+    contacto_id: int
+    tipo_alerta_id: int | None = None
+    nombre_alerta: str | None = None
+    alerta_encuesta_id: int | None = None
+    descripcion: str
+    cantidad_personas_riesgo: int
+    latitud: float
+    longitud: float
+    fecha_reporte: str
+    foto_url: str
+
+
 class FotoEventoRespuesta(BaseModel):
     evento_id: int
     contacto_id: int
