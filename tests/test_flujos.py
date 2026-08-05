@@ -470,9 +470,9 @@ def test_webhook_registra_contacto_con_telefono() -> None:
             text(
                 """
                 INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
+                    (telegram_user_id, chat_id, telefono, nombres, activo)
                 VALUES
-                    (0, 0, :telefono, true)
+                    (0, 0, :telefono, 'Nombre Precargado', true)
                 """
             ),
             {"telefono": telefono},
@@ -544,6 +544,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         ).mappings().one()
         assert row["chat_id"] == chat_id
         assert row["telegram_user_id"] == chat_id
+        assert row["nombres"] == "Nombre Precargado"
         assert row["activo"] is True
     finally:
         flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
@@ -626,6 +627,7 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         )
         assert nivel.status_code == 200
         assert nivel.json()["estado"] == "BARRIDO_REGISTRADO"
+        assert sender.messages[-1]["reply_markup"] == {"remove_keyboard": True}
 
         row = session.execute(
             text(
@@ -846,6 +848,21 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
         assert ubicacion.status_code == 200
         assert ubicacion.json()["estado"] == "ALERTA_UBICACION_RECIBIDA"
 
+        descripcion_con_emoji = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 1230,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "Comunidad San Jose, lluvia fuerte \U0001f327\ufe0f",
+                },
+            },
+        )
+        assert descripcion_con_emoji.status_code == 200
+        assert descripcion_con_emoji.json()["estado"] == "ALERTA_DESCRIPCION_CON_EMOJI"
+        assert "sin emojis" in str(sender.messages[-1]["text"])
+
         descripcion = client.post(
             "/api/telegram/webhook",
             json={
@@ -911,6 +928,7 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
             "- No acercarse a postes, cables o arboles."
         )
         assert "Muchas gracias por tu reporte" in str(sender.messages[-1]["text"])
+        assert sender.messages[-1]["reply_markup"] == {"remove_keyboard": True}
 
         evento = session.execute(
             text(

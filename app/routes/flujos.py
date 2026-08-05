@@ -64,6 +64,20 @@ PASO_ALERTA_FOTO = "ESPERANDO_FOTO_ALERTA"
 PATRON_TELEFONO = re.compile(r"^\+?\d{8,15}$")
 PATRON_TELEFONO_EN_TEXTO = re.compile(r"\+?\d[\d\s().-]{6,}\d")
 PATRON_CANTIDAD_PERSONAS = re.compile(r"^\d{1,6}$")
+PATRON_EMOJI = re.compile(
+    "["
+    "\U0001f300-\U0001f5ff"
+    "\U0001f600-\U0001f64f"
+    "\U0001f680-\U0001f6ff"
+    "\U0001f700-\U0001f77f"
+    "\U0001f780-\U0001f7ff"
+    "\U0001f800-\U0001f8ff"
+    "\U0001f900-\U0001f9ff"
+    "\U0001fa00-\U0001fa6f"
+    "\U0001fa70-\U0001faff"
+    "\u2600-\u27bf"
+    "]"
+)
 OPCIONES_ENCUESTA_LLUVIA = ["Debil", "Moderado", "Fuerte", "Muy fuerte"]
 MAPA_OPCIONES_ENCUESTA_LLUVIA = {
     0: NivelLluvia.debil,
@@ -586,6 +600,10 @@ def _teclado_solicitar_ubicacion() -> dict[str, Any]:
     }
 
 
+def _quitar_teclado_personalizado() -> dict[str, Any]:
+    return {"remove_keyboard": True}
+
+
 def _solicitar_ubicacion_si_es_posible(sender: TelegramSender | None, chat_id: int) -> None:
     _responder_si_es_posible(
         sender,
@@ -652,7 +670,6 @@ def _registrar_telefono_autorizado(
     ya_registrado = int(contacto.telegram_user_id or 0) == telegram_user_id and int(contacto.chat_id or 0) == chat_id
     contacto.telegram_user_id = telegram_user_id
     contacto.chat_id = chat_id
-    contacto.nombres = nombres or contacto.nombres
     contacto.activo = True
     if ya_registrado:
         mensaje = "Este numero ya esta registrado para su cuenta."
@@ -667,6 +684,10 @@ def _registrar_telefono_autorizado(
 
 def _texto_normalizado(texto: str) -> str:
     return texto.strip().lower()
+
+
+def _contiene_emoji(texto: str) -> bool:
+    return PATRON_EMOJI.search(texto) is not None
 
 
 def _es_inicio_o_menu(texto: str) -> bool:
@@ -694,7 +715,10 @@ def _es_comando_reportes(texto: str) -> bool:
 
 
 def _admin_telegram_user_ids() -> set[int]:
-    return set(get_settings().telegram_admin_user_ids)
+    valor = get_settings().telegram_admin_user_ids
+    if isinstance(valor, str):
+        return {int(item.strip()) for item in valor.split(",") if item.strip()}
+    return {int(item) for item in valor}
 
 
 def _es_administrador(telegram_user_id: int) -> bool:
@@ -1412,7 +1436,12 @@ def _recibir_respuesta_encuesta_lluvia(
         registro=registro,
         observacion=f"Nivel recibido por encuesta Telegram: {option_id + 1}",
     )
-    _responder_si_es_posible(sender, contacto.chat_id, "Barrido guardado correctamente.")
+    _responder_si_es_posible(
+        sender,
+        contacto.chat_id,
+        "Barrido guardado correctamente.",
+        reply_markup=_quitar_teclado_personalizado(),
+    )
     return TelegramWebhookRespuesta(
         estado="BARRIDO_REGISTRADO",
         mensaje=f"Barrido guardado con nivel {nivel_evento.nombre}.",
@@ -2008,6 +2037,7 @@ def recibir_webhook_telegram(
                     f"¡Muchas gracias por tu reporte, {_nombre_usuario(contacto)}!, la SNGR agradece tu aporte "
                     "para actuar oportunamente. Si conoces de otra alerta, no dudes en enviarme tu reporte."
                 ),
+                reply_markup=_quitar_teclado_personalizado(),
             )
             return TelegramWebhookRespuesta(
                 estado="REPORTE_ALERTA_GUARDADO",
@@ -2129,7 +2159,12 @@ def recibir_webhook_telegram(
                     latitud=float(location["latitude"]),
                     longitud=float(location["longitude"]),
                 )
-                _responder_si_es_posible(sender, int(chat_id), "Reporte de evento guardado correctamente.")
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "Reporte de evento guardado correctamente.",
+                    reply_markup=_quitar_teclado_personalizado(),
+                )
                 return TelegramWebhookRespuesta(
                     estado="REPORTE_EVENTO_GUARDADO",
                     mensaje=f"Reporte de evento guardado con id {evento.id}.",
@@ -2229,6 +2264,19 @@ def recibir_webhook_telegram(
                     return TelegramWebhookRespuesta(
                         estado="ALERTA_DESCRIPCION_MUY_LARGA",
                         mensaje="La descripcion supera los 200 caracteres.",
+                        contacto_id=contacto_evento.id,
+                        telefono=contacto_evento.telefono,
+                        chat_id=contacto_evento.chat_id,
+                    )
+                if _contiene_emoji(texto):
+                    _responder_si_es_posible(
+                        sender,
+                        int(chat_id),
+                        "La descripcion no debe contener emojis. Por favor envie el texto sin emojis.",
+                    )
+                    return TelegramWebhookRespuesta(
+                        estado="ALERTA_DESCRIPCION_CON_EMOJI",
+                        mensaje="La descripcion contiene emojis.",
                         contacto_id=contacto_evento.id,
                         telefono=contacto_evento.telefono,
                         chat_id=contacto_evento.chat_id,
@@ -2399,7 +2447,12 @@ def recibir_webhook_telegram(
             registro=registro,
             observacion=f"Nivel recibido por Telegram: {texto}",
         )
-        _responder_si_es_posible(sender, int(chat_id), "Barrido guardado correctamente.")
+        _responder_si_es_posible(
+            sender,
+            int(chat_id),
+            "Barrido guardado correctamente.",
+            reply_markup=_quitar_teclado_personalizado(),
+        )
         return TelegramWebhookRespuesta(
             estado="BARRIDO_REGISTRADO",
             mensaje=f"Barrido guardado con nivel {nivel_evento.nombre}.",
