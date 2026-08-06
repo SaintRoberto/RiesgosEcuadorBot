@@ -1442,7 +1442,7 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
         connection.close()
 
 
-def test_endpoint_reporte_alerta_devuelve_json_y_chart_url() -> None:
+def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -1450,6 +1450,11 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        monkeypatch.setattr(
+            flujos,
+            "_resolver_ubicacion_administrativa",
+            lambda latitud, longitud: {"provincia": "Pichincha", "canton": "Quito", "parroquia": "Iñaquito"},
+        )
         _asegurar_catalogos_alertas(session)
         _asegurar_tablas_barridos(session)
         contacto_id = session.execute(
@@ -1524,6 +1529,19 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url() -> None:
         respuesta_por_barrido = client.get(f"/api/telegram/reportes/tipo-alerta/6/barridos/{barrido_id}")
         assert respuesta_por_barrido.status_code == 200
         assert respuesta_por_barrido.json()["barrido_id"] == barrido_id
+
+        respuestas_barridos = client.get("/api/telegram/barridos/respuestas")
+        assert respuestas_barridos.status_code == 200
+        respuesta_item = next(item for item in respuestas_barridos.json() if item["barrido_id"] == barrido_id)
+        assert respuesta_item["tipo_alerta_id"] == 6
+        assert respuesta_item["nombre_alerta"] == "LLUVIAS"
+        assert respuesta_item["nivel_alerta"] == "LLUVIA FUERTE"
+        assert respuesta_item["contacto_id"] == contacto_id
+        assert respuesta_item["latitud"] == -0.1806532
+        assert respuesta_item["longitud"] == -78.4678382
+        assert respuesta_item["provincia"] == "Pichincha"
+        assert respuesta_item["canton"] == "Quito"
+        assert respuesta_item["parroquia"] == "Iñaquito"
     finally:
         app.dependency_overrides.clear()
         session.close()

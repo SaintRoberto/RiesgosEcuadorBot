@@ -110,6 +110,28 @@ class BarridoResumenRespuesta(BaseModel):
     activo: bool
 
 
+class BarridoRespuestaDetalle(BaseModel):
+    id: int
+    barrido_id: int
+    fecha_barrido: str
+    tipo_alerta_id: int
+    nombre_alerta: str | None = None
+    alerta_encuesta_id: int
+    nivel_alerta: str | None = None
+    contacto_id: int
+    telefono: str | None = None
+    nombres: str | None = None
+    descripcion: str | None = None
+    personas_en_riesgo: bool
+    cantidad_personas_riesgo: int
+    latitud: float
+    longitud: float
+    provincia: str | None = None
+    canton: str | None = None
+    parroquia: str | None = None
+    fecha_respuesta: str
+
+
 class ReporteAlertaOpcionRespuesta(BaseModel):
     alerta_encuesta_id: int
     nombre: str

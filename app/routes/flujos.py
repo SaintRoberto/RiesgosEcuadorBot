@@ -28,6 +28,7 @@ from app.schemas import (
     AlertaEncuestaRespuesta,
     AlertaRecomendacionRespuesta,
     BarridoGuardadoRespuesta,
+    BarridoRespuestaDetalle,
     BarridoResumenRespuesta,
     CrearBoletinRequest,
     CrearSeguimientoEventoRequest,
@@ -3345,6 +3346,76 @@ def registrar_respuesta_barrido(
         latitud=float(respuesta_barrido.latitud),
         longitud=float(respuesta_barrido.longitud),
     )
+
+
+@router.get(
+    "/barridos/respuestas",
+    response_model=list[BarridoRespuestaDetalle],
+    tags=["barridos"],
+    summary="Listar todas las respuestas de barridos",
+)
+def listar_respuestas_barridos(
+    db: Session = Depends(get_db),
+) -> list[BarridoRespuestaDetalle]:
+    filas = db.execute(
+        select(
+            TelegramBarridoRespuesta,
+            TelegramBarrido,
+            TipoAlerta.descripcion.label("nombre_alerta"),
+            AlertaEncuesta.nombre.label("nivel_alerta"),
+            TelegramContacto.telefono,
+            TelegramContacto.nombres,
+        )
+        .join(TelegramBarrido, TelegramBarrido.id == TelegramBarridoRespuesta.barrido_id)
+        .outerjoin(TipoAlerta, TipoAlerta.id == TelegramBarrido.tipo_alerta_id)
+        .outerjoin(AlertaEncuesta, AlertaEncuesta.id == TelegramBarridoRespuesta.alerta_encuesta_id)
+        .outerjoin(TelegramContacto, TelegramContacto.id == TelegramBarridoRespuesta.contacto_id)
+        .where(
+            TelegramBarrido.activo.is_(True),
+            TelegramBarridoRespuesta.activo.is_(True),
+        )
+        .order_by(
+            TelegramBarrido.fecha_barrido.desc(),
+            TelegramBarrido.id.desc(),
+            TelegramBarridoRespuesta.fecha_respuesta.desc(),
+        )
+    ).all()
+
+    ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
+    respuesta: list[BarridoRespuestaDetalle] = []
+    for respuesta_barrido, barrido, nombre_alerta, nivel_alerta, telefono, nombres in filas:
+        latitud = float(respuesta_barrido.latitud)
+        longitud = float(respuesta_barrido.longitud)
+        cache_key = (latitud, longitud)
+        ubicacion_admin = ubicaciones_cache.get(cache_key)
+        if ubicacion_admin is None:
+            ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
+            ubicaciones_cache[cache_key] = ubicacion_admin
+
+        respuesta.append(
+            BarridoRespuestaDetalle(
+                id=respuesta_barrido.id,
+                barrido_id=barrido.id,
+                fecha_barrido=_formatear_fecha_reporte(barrido.fecha_barrido),
+                tipo_alerta_id=barrido.tipo_alerta_id,
+                nombre_alerta=nombre_alerta,
+                alerta_encuesta_id=respuesta_barrido.alerta_encuesta_id,
+                nivel_alerta=nivel_alerta,
+                contacto_id=respuesta_barrido.contacto_id,
+                telefono=telefono,
+                nombres=nombres,
+                descripcion=respuesta_barrido.descripcion,
+                personas_en_riesgo=bool(respuesta_barrido.personas_en_riesgo),
+                cantidad_personas_riesgo=int(respuesta_barrido.cantidad_personas_riesgo or 0),
+                latitud=latitud,
+                longitud=longitud,
+                provincia=ubicacion_admin["provincia"],
+                canton=ubicacion_admin["canton"],
+                parroquia=ubicacion_admin["parroquia"],
+                fecha_respuesta=_formatear_fecha_reporte(respuesta_barrido.fecha_respuesta),
+            )
+        )
+    return respuesta
 
 
 @router.get(
