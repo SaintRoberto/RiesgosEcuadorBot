@@ -31,15 +31,6 @@ class TelegramContacto(Base):
     )
 
 
-class CatalogoNivelEvento(Base):
-    __tablename__ = "catalogo_niveles_evento"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    nombre: Mapped[str] = mapped_column(String(100), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(String(300))
-    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
-
-
 class TipoAlerta(Base):
     __tablename__ = "tipo_alertas"
 
@@ -103,21 +94,62 @@ class AlertaRecomendacion(Base):
 
 class TelegramBarrido(Base):
     __tablename__ = "telegram_barridos"
+    __table_args__ = (
+        Index("idx_telegram_barridos_tipo_alerta", "tipo_alerta_id"),
+        Index("idx_telegram_barridos_fecha", "fecha_barrido"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    contacto_id: Mapped[int] = mapped_column(
+    tipo_alerta_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("telegram_contactos.id", name="fk_telegram_barridos_contacto"),
+        ForeignKey("tipo_alertas.id", name="fk_telegram_barridos_tipo_alerta"),
         nullable=False,
     )
-    nivel_id: Mapped[int] = mapped_column(
+    codigo: Mapped[str | None] = mapped_column(String(150))
+    mensaje: Mapped[str | None] = mapped_column(Text)
+    fecha_barrido: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    fecha_creacion: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class TelegramBarridoRespuesta(Base):
+    __tablename__ = "telegram_barrido_respuestas"
+    __table_args__ = (
+        CheckConstraint("latitud >= -90 AND latitud <= 90", name="chk_telegram_barrido_respuestas_latitud"),
+        CheckConstraint("longitud >= -180 AND longitud <= 180", name="chk_telegram_barrido_respuestas_longitud"),
+        Index("idx_telegram_barrido_respuestas_barrido", "barrido_id"),
+        Index("idx_telegram_barrido_respuestas_contacto", "contacto_id"),
+        Index("idx_telegram_barrido_respuestas_alerta_encuesta", "alerta_encuesta_id"),
+        Index("uq_telegram_barrido_respuesta_contacto", "barrido_id", "contacto_id", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    barrido_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("catalogo_niveles_evento.id", name="fk_telegram_barridos_nivel"),
+        ForeignKey("telegram_barridos.id", name="fk_telegram_barrido_respuestas_barrido"),
+        nullable=False,
+    )
+    contacto_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_contactos.id", name="fk_telegram_barrido_respuestas_contacto"),
+        nullable=False,
+    )
+    alerta_encuesta_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("alerta_encuesta.id", name="fk_telegram_barrido_respuestas_alerta_encuesta"),
         nullable=False,
     )
     latitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
     longitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
-    fecha_barrido: Mapped[datetime] = mapped_column(
+    fecha_respuesta: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),

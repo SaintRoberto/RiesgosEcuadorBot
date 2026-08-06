@@ -1,28 +1,11 @@
 from datetime import date
-from enum import StrEnum
-from typing import Any
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class HealthRespuesta(BaseModel):
     estado: str
     base_datos: str
-
-
-class NivelLluvia(StrEnum):
-    debil = "DEBIL"
-    moderado = "MODERADO"
-    fuerte = "FUERTE"
-    muy_fuerte = "MUY_FUERTE"
-
-
-MAPA_NIVELES_LLUVIAS = {
-    "1": NivelLluvia.debil,
-    "2": NivelLluvia.moderado,
-    "3": NivelLluvia.fuerte,
-    "4": NivelLluvia.muy_fuerte,
-}
 
 
 class CrearBoletinRequest(BaseModel):
@@ -36,6 +19,7 @@ class CrearBoletinRequest(BaseModel):
 
 class SolicitarBarridoRequest(BaseModel):
     telefonos: list[str] = Field(..., min_length=1, examples=[["+593987223658"]])
+    tipo_alerta_id: int = Field(default=6, examples=[6])
     fecha_barrido: date | None = None
     codigo: str | None = Field(default=None, max_length=150)
     mensaje: str | None = Field(default=None, max_length=500)
@@ -44,22 +28,12 @@ class SolicitarBarridoRequest(BaseModel):
 
 class RegistrarBarridoRequest(BaseModel):
     telefono: str = Field(..., examples=["+593987223658"])
-    nivel_lluvia: NivelLluvia = Field(..., examples=["2"])
+    alerta_encuesta_id: int = Field(..., examples=[16])
     latitud: float = Field(..., ge=-90, le=90, examples=[-0.1806532])
     longitud: float = Field(..., ge=-180, le=180, examples=[-78.4678382])
     codigo: str | None = Field(default=None, max_length=150)
     observacion: str | None = None
     usuario_id: int | None = None
-
-    @field_validator("nivel_lluvia", mode="before")
-    @classmethod
-    def normalizar_nivel_lluvia(cls, value: Any) -> Any:
-        if isinstance(value, int):
-            return MAPA_NIVELES_LLUVIAS.get(str(value), value)
-        if isinstance(value, str):
-            texto = value.strip().upper()
-            return MAPA_NIVELES_LLUVIAS.get(texto, texto)
-        return value
 
 
 class CrearSeguimientoEventoRequest(BaseModel):
@@ -107,6 +81,7 @@ class RegistroFlujoRespuesta(BaseModel):
 
 class EnvioFlujoRespuesta(BaseModel):
     codigo: str
+    barrido_id: int | None = None
     total: int
     registros: list[RegistroFlujoRespuesta]
 
@@ -114,13 +89,25 @@ class EnvioFlujoRespuesta(BaseModel):
 class BarridoGuardadoRespuesta(BaseModel):
     id: int
     barrido_id: int
+    barrido_respuesta_id: int
     telefono: str | None
     codigo: str | None
     estado: str
-    nivel_lluvia: NivelLluvia
-    nivel_id: int
+    tipo_alerta_id: int
+    alerta_encuesta_id: int
     latitud: float
     longitud: float
+
+
+class BarridoResumenRespuesta(BaseModel):
+    id: int
+    tipo_alerta_id: int
+    nombre_alerta: str | None = None
+    codigo: str | None = None
+    mensaje: str | None = None
+    fecha_barrido: str
+    total_respuestas: int
+    activo: bool
 
 
 class ReporteAlertaOpcionRespuesta(BaseModel):
@@ -132,8 +119,10 @@ class ReporteAlertaOpcionRespuesta(BaseModel):
 
 
 class ReporteAlertaRespuesta(BaseModel):
+    barrido_id: int | None = None
     tipo_alerta_id: int
     nombre_alerta: str
+    fecha_barrido: str | None = None
     total: int
     opciones: list[ReporteAlertaOpcionRespuesta]
     chart_url: str

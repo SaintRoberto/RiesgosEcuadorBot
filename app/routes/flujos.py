@@ -17,8 +17,8 @@ from app.config import get_settings
 from app.models import (
     AlertaEncuesta,
     AlertaRecomendacion,
-    CatalogoNivelEvento,
     TelegramBarrido,
+    TelegramBarridoRespuesta,
     TelegramConsulta,
     TelegramContacto,
     TelegramEvento,
@@ -28,13 +28,12 @@ from app.schemas import (
     AlertaEncuestaRespuesta,
     AlertaRecomendacionRespuesta,
     BarridoGuardadoRespuesta,
+    BarridoResumenRespuesta,
     CrearBoletinRequest,
     CrearSeguimientoEventoRequest,
     EnvioFlujoRespuesta,
     EventoRespuesta,
     FotoEventoRespuesta,
-    MAPA_NIVELES_LLUVIAS,
-    NivelLluvia,
     RegistrarBarridoRequest,
     ReporteAlertaOpcionRespuesta,
     ReporteAlertaRespuesta,
@@ -242,9 +241,14 @@ def _contactos_activos_por_telefono(db: Session, telefonos: list[str]) -> list[T
     return contactos
 
 
-def _respuesta_envio(codigo: str, registros: list[TelegramConsulta]) -> EnvioFlujoRespuesta:
+def _respuesta_envio(
+    codigo: str,
+    registros: list[TelegramConsulta],
+    barrido_id: int | None = None,
+) -> EnvioFlujoRespuesta:
     return EnvioFlujoRespuesta(
         codigo=codigo,
+        barrido_id=barrido_id,
         total=len(registros),
         registros=[
             RegistroFlujoRespuesta(
@@ -289,67 +293,121 @@ def _alerta_recomendacion_respuesta(alerta_recomendacion: AlertaRecomendacion) -
     )
 
 
-def _obtener_nivel_evento(db: Session, nivel: NivelLluvia) -> CatalogoNivelEvento:
-    nivel_evento = db.scalars(
-        select(CatalogoNivelEvento).where(
-            CatalogoNivelEvento.nombre == nivel.value,
-            CatalogoNivelEvento.activo.is_(True),
-        )
-    ).first()
-    if nivel_evento is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No existe un nivel activo en catalogo_niveles_evento para {nivel.value}.",
-        )
-    return nivel_evento
-
-
 def _consulta_barrido_activa_por_contacto(db: Session, contacto_id: int) -> TelegramConsulta | None:
     return db.scalars(
         select(TelegramConsulta)
         .where(
             TelegramConsulta.contacto_id == contacto_id,
             TelegramConsulta.tipo_consulta == TIPO_BARRIDO,
-            TelegramConsulta.estado.in_(["PENDIENTE", "PROCESANDO", "COMPLETADA"]),
+            TelegramConsulta.estado.in_(["PENDIENTE", "PROCESANDO"]),
         )
         .order_by(TelegramConsulta.fecha_consulta.desc())
     ).first()
 
 
+def _obtener_tipo_alerta_activa(db: Session, tipo_alerta_id: int) -> TipoAlerta:
+    tipo_alerta = db.get(TipoAlerta, tipo_alerta_id)
+    if tipo_alerta is None or not tipo_alerta.activo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tipo de alerta no encontrado o inactivo.",
+        )
+    return tipo_alerta
+
+
+def _obtener_alerta_encuesta_activa(db: Session, alerta_encuesta_id: int) -> AlertaEncuesta:
+    opcion = db.get(AlertaEncuesta, alerta_encuesta_id)
+    if opcion is None or not opcion.activo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Opcion de encuesta no encontrada o inactiva.",
+        )
+    return opcion
+
+
+def _crear_cabecera_barrido(
+    db: Session,
+    tipo_alerta_id: int,
+    codigo: str | None,
+    mensaje: str | None,
+) -> TelegramBarrido:
+    _obtener_tipo_alerta_activa(db, tipo_alerta_id)
+    barrido = TelegramBarrido(
+        tipo_alerta_id=tipo_alerta_id,
+        codigo=codigo,
+        mensaje=mensaje,
+    )
+    db.add(barrido)
+    db.commit()
+    db.refresh(barrido)
+    return barrido
+
+
 def _guardar_barrido(
     db: Session,
     contacto: TelegramContacto,
-    nivel: NivelLluvia,
+    opcion: AlertaEncuesta,
     latitud: float,
     longitud: float,
     registro: TelegramConsulta | None,
     observacion: str | None = None,
-) -> tuple[TelegramConsulta, TelegramBarrido, CatalogoNivelEvento]:
-    nivel_evento = _obtener_nivel_evento(db, nivel)
+) -> tuple[TelegramConsulta, TelegramBarridoRespuesta, TelegramBarrido, AlertaEncuesta]:
     if registro is None:
         registro = TelegramConsulta(
             contacto_id=contacto.id,
             usuario_id=contacto.usuario_id,
             tipo_consulta=TIPO_BARRIDO,
             consulta="Respuesta de barrido recibida por Telegram",
+            parametros={
+                "canal": "TELEGRAM",
+                "flujo": FLUJO_REPORTE_BARRIDO,
+                "telefono": contacto.telefono,
+                "tipo_alerta": {"id": opcion.tipo_alerta_id},
+            },
         )
         db.add(registro)
 
-    barrido = TelegramBarrido(
-        contacto_id=contacto.id,
-        nivel_id=nivel_evento.id,
-        latitud=Decimal(str(latitud)),
-        longitud=Decimal(str(longitud)),
-    )
-    db.add(barrido)
     parametros = dict(registro.parametros or {})
+    barrido_id = _entero_o_none(parametros.get("barrido_id"))
+    barrido = db.get(TelegramBarrido, barrido_id) if barrido_id is not None else None
+    if barrido is None:
+        barrido = _crear_cabecera_barrido(
+            db=db,
+            tipo_alerta_id=opcion.tipo_alerta_id,
+            codigo=registro.codigo,
+            mensaje=registro.consulta,
+        )
+        parametros["barrido_id"] = barrido.id
+    if barrido.tipo_alerta_id != opcion.tipo_alerta_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La opcion seleccionada no pertenece al tipo de alerta del barrido.",
+        )
+
+    respuesta_barrido = db.scalars(
+        select(TelegramBarridoRespuesta).where(
+            TelegramBarridoRespuesta.barrido_id == barrido.id,
+            TelegramBarridoRespuesta.contacto_id == contacto.id,
+        )
+    ).first()
+    if respuesta_barrido is None:
+        respuesta_barrido = TelegramBarridoRespuesta(
+            barrido_id=barrido.id,
+            contacto_id=contacto.id,
+            alerta_encuesta_id=opcion.id,
+            latitud=Decimal(str(latitud)),
+            longitud=Decimal(str(longitud)),
+        )
+        db.add(respuesta_barrido)
+
     parametros.pop("ubicacion_pendiente", None)
     registro.parametros = parametros
     registro.respuesta = {
         "canal": "TELEGRAM",
         "telefono": contacto.telefono,
-        "nivel_lluvia": nivel.value,
-        "nivel_id": nivel_evento.id,
+        "barrido_id": barrido.id,
+        "alerta_encuesta_id": opcion.id,
+        "nivel": opcion.nombre,
         "latitud": latitud,
         "longitud": longitud,
         "observacion": observacion,
@@ -358,8 +416,9 @@ def _guardar_barrido(
     registro.fecha_respuesta = datetime.now(timezone.utc)
     db.commit()
     db.refresh(registro)
+    db.refresh(respuesta_barrido)
     db.refresh(barrido)
-    return registro, barrido, nivel_evento
+    return registro, respuesta_barrido, barrido, opcion
 
 
 def _marcar_envio(registro: TelegramConsulta, sender: TelegramSender, chat_id: int, texto: str) -> None:
@@ -822,12 +881,34 @@ def _iniciar_reporte_barrido(
     db: Session,
     contacto: TelegramContacto,
     sender: TelegramSender | None,
+    tipo_alerta_id: int = TIPO_ALERTA_LLUVIAS_ID,
+    barrido_id: int | None = None,
     codigo: str | None = None,
     mensaje: str | None = None,
     fecha_barrido: date | None = None,
     usuario_id: int | None = None,
 ) -> None:
+    tipo_alerta = _obtener_tipo_alerta_activa(db, tipo_alerta_id)
+    barrido = db.get(TelegramBarrido, barrido_id) if barrido_id is not None else None
+    if barrido is None:
+        barrido = _crear_cabecera_barrido(
+            db=db,
+            tipo_alerta_id=tipo_alerta.id,
+            codigo=codigo,
+            mensaje=mensaje,
+        )
     registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
+    parametros_base = {
+        "canal": "TELEGRAM",
+        "flujo": FLUJO_REPORTE_BARRIDO,
+        "telefono": contacto.telefono,
+        "fecha_barrido": fecha_barrido.isoformat() if fecha_barrido else None,
+        "barrido_id": barrido.id,
+        "tipo_alerta": {
+            "id": tipo_alerta.id,
+            "descripcion": tipo_alerta.descripcion,
+        },
+    }
     if registro is None:
         registro = TelegramConsulta(
             contacto_id=contacto.id,
@@ -835,12 +916,7 @@ def _iniciar_reporte_barrido(
             tipo_consulta=TIPO_BARRIDO,
             codigo=codigo,
             consulta=mensaje or "Reporte de barrido iniciado desde Telegram",
-            parametros={
-                "canal": "TELEGRAM",
-                "flujo": FLUJO_REPORTE_BARRIDO,
-                "telefono": contacto.telefono,
-                "fecha_barrido": fecha_barrido.isoformat() if fecha_barrido else None,
-            },
+            parametros=parametros_base,
             estado="PROCESANDO",
         )
         db.add(registro)
@@ -849,9 +925,9 @@ def _iniciar_reporte_barrido(
         registro.codigo = codigo or registro.codigo
         registro.consulta = mensaje or registro.consulta or "Reporte de barrido iniciado desde Telegram"
         parametros = dict(registro.parametros or {})
-        parametros["flujo"] = FLUJO_REPORTE_BARRIDO
-        parametros["telefono"] = contacto.telefono
-        parametros["fecha_barrido"] = fecha_barrido.isoformat() if fecha_barrido else parametros.get("fecha_barrido")
+        parametros.update(parametros_base)
+        if fecha_barrido is None:
+            parametros["fecha_barrido"] = parametros.get("fecha_barrido")
         registro.parametros = parametros
         registro.estado = "PROCESANDO"
     db.commit()
@@ -866,10 +942,17 @@ def _iniciar_reporte_barrido(
         _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
 
 
-def _ejecutar_script_barrido_lluvia(
+def _ejecutar_script_barrido_alerta(
     db: Session,
     sender: TelegramSender | None,
-) -> int:
+    tipo_alerta_id: int,
+) -> tuple[int, TelegramBarrido]:
+    tipo_alerta = _obtener_tipo_alerta_activa(db, tipo_alerta_id)
+    if not _encuestas_alerta_activas(db, tipo_alerta.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No existen niveles configurados para este tipo de alerta.",
+        )
     contactos = list(
         db.scalars(
             select(TelegramContacto).where(
@@ -883,20 +966,45 @@ def _ejecutar_script_barrido_lluvia(
         )
     )
     fecha_barrido = date.today()
+    codigo = SCRIPT_BARRIDO_LLUVIA_CODIGO if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID else f"BARRIDO-{tipo_alerta.id}"
+    mensaje = (
+        SCRIPT_BARRIDO_LLUVIA_MENSAJE
+        if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID
+        else f"Recordatorio de reporte de barrido: enviar su ubicacion y nivel de {tipo_alerta.descripcion.lower()}."
+    )
+    barrido = _crear_cabecera_barrido(
+        db=db,
+        tipo_alerta_id=tipo_alerta.id,
+        codigo=codigo,
+        mensaje=mensaje,
+    )
     for contacto in contactos:
         _iniciar_reporte_barrido(
             db=db,
             contacto=contacto,
             sender=sender,
-            codigo=SCRIPT_BARRIDO_LLUVIA_CODIGO,
-            mensaje=SCRIPT_BARRIDO_LLUVIA_MENSAJE,
+            tipo_alerta_id=tipo_alerta.id,
+            barrido_id=barrido.id,
+            codigo=codigo,
+            mensaje=mensaje,
             fecha_barrido=fecha_barrido,
         )
-    return len(contactos)
+    return len(contactos), barrido
 
 
-def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRespuesta:
-    tipo_alerta = db.get(TipoAlerta, tipo_alerta_id)
+def _ultimo_barrido_por_tipo_alerta(db: Session, tipo_alerta_id: int) -> TelegramBarrido | None:
+    return db.scalars(
+        select(TelegramBarrido)
+        .where(
+            TelegramBarrido.tipo_alerta_id == tipo_alerta_id,
+            TelegramBarrido.activo.is_(True),
+        )
+        .order_by(TelegramBarrido.fecha_barrido.desc(), TelegramBarrido.id.desc())
+    ).first()
+
+
+def _obtener_reporte_barrido(db: Session, barrido: TelegramBarrido) -> ReporteAlertaRespuesta:
+    tipo_alerta = db.get(TipoAlerta, barrido.tipo_alerta_id)
     if tipo_alerta is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -909,17 +1017,18 @@ def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRe
             AlertaEncuesta.nombre,
             AlertaEncuesta.descripcion,
             AlertaEncuesta.color,
-            func.count(TelegramEvento.id).label("cantidad"),
+            func.count(TelegramBarridoRespuesta.id).label("cantidad"),
         )
         .outerjoin(
-            TelegramEvento,
+            TelegramBarridoRespuesta,
             and_(
-                TelegramEvento.alerta_encuesta_id == AlertaEncuesta.id,
-                TelegramEvento.activo.is_(True),
+                TelegramBarridoRespuesta.alerta_encuesta_id == AlertaEncuesta.id,
+                TelegramBarridoRespuesta.barrido_id == barrido.id,
+                TelegramBarridoRespuesta.activo.is_(True),
             ),
         )
         .where(
-            AlertaEncuesta.tipo_alerta_id == tipo_alerta_id,
+            AlertaEncuesta.tipo_alerta_id == barrido.tipo_alerta_id,
             AlertaEncuesta.activo.is_(True),
         )
         .group_by(AlertaEncuesta.id, AlertaEncuesta.nombre, AlertaEncuesta.descripcion, AlertaEncuesta.color)
@@ -936,8 +1045,10 @@ def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRe
         for alerta_encuesta_id, nombre, descripcion, color, cantidad in rows
     ]
     reporte = ReporteAlertaRespuesta(
+        barrido_id=barrido.id,
         tipo_alerta_id=tipo_alerta.id,
         nombre_alerta=tipo_alerta.descripcion,
+        fecha_barrido=_formatear_fecha_reporte(barrido.fecha_barrido),
         total=sum(opcion.cantidad for opcion in opciones),
         opciones=opciones,
         chart_url="",
@@ -945,9 +1056,59 @@ def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRe
     return reporte.model_copy(update={"chart_url": _crear_url_grafico_reporte_alerta(reporte)})
 
 
+def _obtener_reporte_barrido_por_tipo(
+    db: Session,
+    tipo_alerta_id: int,
+    barrido_id: int,
+) -> ReporteAlertaRespuesta:
+    _obtener_tipo_alerta_activa(db, tipo_alerta_id)
+    barrido = db.get(TelegramBarrido, barrido_id)
+    if barrido is None or not barrido.activo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Barrido no encontrado.",
+        )
+    if barrido.tipo_alerta_id != tipo_alerta_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El barrido no pertenece al tipo de alerta indicado.",
+        )
+    return _obtener_reporte_barrido(db, barrido)
+
+
+def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRespuesta:
+    _obtener_tipo_alerta_activa(db, tipo_alerta_id)
+    barrido = _ultimo_barrido_por_tipo_alerta(db, tipo_alerta_id)
+    if barrido is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No existe un barrido para este tipo de alerta.",
+        )
+    return _obtener_reporte_barrido(db, barrido)
+
+
+def _barrido_resumen_respuesta(
+    barrido: TelegramBarrido,
+    nombre_alerta: str | None,
+    total_respuestas: int,
+) -> BarridoResumenRespuesta:
+    return BarridoResumenRespuesta(
+        id=barrido.id,
+        tipo_alerta_id=barrido.tipo_alerta_id,
+        nombre_alerta=nombre_alerta,
+        codigo=barrido.codigo,
+        mensaje=barrido.mensaje,
+        fecha_barrido=_formatear_fecha_reporte(barrido.fecha_barrido),
+        total_respuestas=total_respuestas,
+        activo=barrido.activo,
+    )
+
+
 def _formatear_reporte_alerta(reporte: ReporteAlertaRespuesta) -> str:
     lineas = [
         f"Reporte de alertas: {reporte.nombre_alerta}",
+        f"Barrido id: {reporte.barrido_id}",
+        f"Fecha barrido: {reporte.fecha_barrido}",
         f"Total de reportes: {reporte.total}",
         "",
         "Nivel por tipo:",
@@ -1445,20 +1606,7 @@ def _seleccionar_reporte_evento(
     )
 
 
-def _nivel_lluvia_desde_opcion_alerta(opcion: AlertaEncuesta) -> NivelLluvia | None:
-    nombre = _normalizar_texto_catalogo(opcion.nombre)
-    if "MUY FUERTE" in nombre:
-        return NivelLluvia.muy_fuerte
-    if "FUERTE" in nombre:
-        return NivelLluvia.fuerte
-    if "MODERAD" in nombre:
-        return NivelLluvia.moderado
-    if "DEBIL" in nombre or "LEVE" in nombre:
-        return NivelLluvia.debil
-    return None
-
-
-def _enviar_encuesta_lluvia_si_es_posible(
+def _enviar_encuesta_barrido_si_es_posible(
     db: Session,
     sender: TelegramSender | None,
     chat_id: int,
@@ -1466,29 +1614,50 @@ def _enviar_encuesta_lluvia_si_es_posible(
 ) -> None:
     if sender is None:
         return
-    opciones = _encuestas_alerta_activas(db, TIPO_ALERTA_LLUVIAS_ID)
+    tipo_alerta = (registro.parametros or {}).get("tipo_alerta") or {}
+    tipo_alerta_id = _entero_o_none(tipo_alerta.get("id")) or TIPO_ALERTA_LLUVIAS_ID
+    opciones = _encuestas_alerta_activas(db, tipo_alerta_id)
     if not opciones:
-        _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para lluvias.")
+        _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para este barrido.")
         return
     parametros = dict(registro.parametros or {})
-    parametros["encuesta_lluvia_opciones"] = [opcion.id for opcion in opciones]
+    parametros["encuesta_barrido_opciones"] = [opcion.id for opcion in opciones]
     registro.parametros = parametros
     db.commit()
+    textos = [_texto_opcion_encuesta_alerta(opcion) for opcion in opciones]
     try:
         sender.send_poll(
             chat_id=chat_id,
             question="Ingrese el NIVEL de alerta que usted visualiza:",
-            options=[_texto_opcion_encuesta_alerta(opcion) for opcion in opciones],
+            options=textos,
         )
     except TelegramDeliveryError:
-        _responder_si_es_posible(sender, chat_id, MENSAJE_SELECCION_NIVEL_LLUVIA)
+        lineas = ["Ingrese el NIVEL de alerta que usted visualiza:"]
+        lineas.extend(f"{indice + 1}) {texto}" for indice, texto in enumerate(textos))
+        _responder_si_es_posible(sender, chat_id, "\n".join(lineas))
 
 
-def _nivel_desde_respuesta_encuesta(
+def _opcion_barrido_desde_indice(
+    db: Session,
+    registro: TelegramConsulta,
+    option_id: int,
+) -> AlertaEncuesta | None:
+    opcion_ids = (registro.parametros or {}).get("encuesta_barrido_opciones") or []
+    if option_id < 0 or option_id >= len(opcion_ids):
+        return None
+    opcion = db.get(AlertaEncuesta, int(opcion_ids[option_id]))
+    tipo_alerta = (registro.parametros or {}).get("tipo_alerta") or {}
+    tipo_alerta_id = _entero_o_none(tipo_alerta.get("id")) or TIPO_ALERTA_LLUVIAS_ID
+    if opcion is None or not opcion.activo or opcion.tipo_alerta_id != tipo_alerta_id:
+        return None
+    return opcion
+
+
+def _opcion_barrido_desde_respuesta_encuesta(
     db: Session,
     registro: TelegramConsulta,
     poll_answer: dict[str, Any],
-) -> tuple[NivelLluvia, AlertaEncuesta] | None:
+) -> AlertaEncuesta | None:
     option_ids = poll_answer.get("option_ids")
     if not isinstance(option_ids, list) or not option_ids:
         return None
@@ -1496,16 +1665,15 @@ def _nivel_desde_respuesta_encuesta(
         option_id = int(option_ids[0])
     except (TypeError, ValueError):
         return None
-    opcion_ids = (registro.parametros or {}).get("encuesta_lluvia_opciones") or []
-    if option_id < 0 or option_id >= len(opcion_ids):
+    return _opcion_barrido_desde_indice(db, registro, option_id)
+
+
+def _opcion_barrido_desde_texto(db: Session, registro: TelegramConsulta, texto: str) -> AlertaEncuesta | None:
+    try:
+        option_id = int(texto.strip()) - 1
+    except ValueError:
         return None
-    opcion = db.get(AlertaEncuesta, int(opcion_ids[option_id]))
-    if opcion is None or not opcion.activo or opcion.tipo_alerta_id != TIPO_ALERTA_LLUVIAS_ID:
-        return None
-    nivel = _nivel_lluvia_desde_opcion_alerta(opcion)
-    if nivel is None:
-        return None
-    return nivel, opcion
+    return _opcion_barrido_desde_indice(db, registro, option_id)
 
 
 def _recibir_respuesta_encuesta_lluvia(
@@ -1537,8 +1705,8 @@ def _recibir_respuesta_encuesta_lluvia(
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
         )
-    nivel_opcion = _nivel_desde_respuesta_encuesta(db, registro, poll_answer)
-    if nivel_opcion is None:
+    opcion_alerta = _opcion_barrido_desde_respuesta_encuesta(db, registro, poll_answer)
+    if opcion_alerta is None:
         return TelegramWebhookRespuesta(
             estado="ENCUESTA_IGNORADA",
             mensaje="La respuesta de encuesta no contiene una opcion valida.",
@@ -1546,7 +1714,6 @@ def _recibir_respuesta_encuesta_lluvia(
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
         )
-    nivel, opcion_alerta = nivel_opcion
     ubicacion = (registro.parametros or {}).get("ubicacion_pendiente") if registro else None
     if not ubicacion:
         _responder_si_es_posible(
@@ -1562,10 +1729,10 @@ def _recibir_respuesta_encuesta_lluvia(
             chat_id=contacto.chat_id,
         )
 
-    registro, barrido, nivel_evento = _guardar_barrido(
+    registro, respuesta_barrido, barrido, opcion_alerta = _guardar_barrido(
         db=db,
         contacto=contacto,
-        nivel=nivel,
+        opcion=opcion_alerta,
         latitud=float(ubicacion["latitud"]),
         longitud=float(ubicacion["longitud"]),
         registro=registro,
@@ -1579,7 +1746,7 @@ def _recibir_respuesta_encuesta_lluvia(
     )
     return TelegramWebhookRespuesta(
         estado="BARRIDO_REGISTRADO",
-        mensaje=f"Barrido guardado con nivel {nivel_evento.nombre}.",
+        mensaje=f"Barrido {barrido.id} guardado con nivel {opcion_alerta.nombre}.",
         contacto_id=contacto.id,
         telefono=contacto.telefono,
         chat_id=contacto.chat_id,
@@ -1837,21 +2004,14 @@ def _recibir_callback_menu_principal(
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
-        if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID:
-            total = _ejecutar_script_barrido_lluvia(db, sender)
-            mensaje = f"Script de barridos lluvia ejecutado. Solicitudes enviadas: {total}."
-            _responder_si_es_posible(sender, int(chat_id), mensaje)
-            return TelegramWebhookRespuesta(
-                estado="SCRIPT_BARRIDO_LLUVIA_EJECUTADO",
-                mensaje=mensaje,
-                contacto_id=contacto.id,
-                telefono=contacto.telefono,
-                chat_id=contacto.chat_id,
-            )
-        mensaje = f"El script de {tipo_alerta.descripcion} aun no esta configurado."
+        total, barrido = _ejecutar_script_barrido_alerta(db, sender, tipo_alerta.id)
+        mensaje = (
+            f"Script de barridos {tipo_alerta.descripcion.lower()} ejecutado. "
+            f"Barrido id: {barrido.id}. Solicitudes enviadas: {total}."
+        )
         _responder_si_es_posible(sender, int(chat_id), mensaje)
         return TelegramWebhookRespuesta(
-            estado="SCRIPT_NO_CONFIGURADO",
+            estado="SCRIPT_BARRIDO_EJECUTADO",
             mensaje=mensaje,
             contacto_id=contacto.id,
             telefono=contacto.telefono,
@@ -2365,7 +2525,7 @@ def recibir_webhook_telegram(
         registro.estado = "PROCESANDO"
         db.commit()
         db.refresh(registro)
-        _enviar_encuesta_lluvia_si_es_posible(db, sender, int(chat_id), registro)
+        _enviar_encuesta_barrido_si_es_posible(db, sender, int(chat_id), registro)
         return TelegramWebhookRespuesta(
             estado="UBICACION_RECIBIDA",
             mensaje="Ubicacion guardada temporalmente para el barrido.",
@@ -2556,9 +2716,10 @@ def recibir_webhook_telegram(
                 chat_id=contacto_barrido.chat_id,
             )
 
-    nivel = MAPA_NIVELES_LLUVIAS.get(texto.strip())
-    if nivel:
-        contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+    contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
+    registro = _consulta_barrido_activa_por_contacto(db, contacto.id) if contacto is not None else None
+    opcion_barrido = _opcion_barrido_desde_texto(db, registro, texto) if registro is not None else None
+    if opcion_barrido is not None:
         if contacto is None:
             _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
             return TelegramWebhookRespuesta(
@@ -2567,7 +2728,6 @@ def recibir_webhook_telegram(
                 chat_id=int(chat_id),
             )
 
-        registro = _consulta_barrido_activa_por_contacto(db, contacto.id)
         ubicacion = (registro.parametros or {}).get("ubicacion_pendiente") if registro else None
         if not ubicacion:
             _responder_si_es_posible(
@@ -2583,10 +2743,10 @@ def recibir_webhook_telegram(
                 chat_id=contacto.chat_id,
             )
 
-        registro, barrido, nivel_evento = _guardar_barrido(
+        registro, respuesta_barrido, barrido, opcion_barrido = _guardar_barrido(
             db=db,
             contacto=contacto,
-            nivel=nivel,
+            opcion=opcion_barrido,
             latitud=float(ubicacion["latitud"]),
             longitud=float(ubicacion["longitud"]),
             registro=registro,
@@ -2600,7 +2760,7 @@ def recibir_webhook_telegram(
         )
         return TelegramWebhookRespuesta(
             estado="BARRIDO_REGISTRADO",
-            mensaje=f"Barrido guardado con nivel {nivel_evento.nombre}.",
+            mensaje=f"Barrido {barrido.id} guardado con nivel {opcion_barrido.nombre}.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -2638,7 +2798,6 @@ def recibir_webhook_telegram(
             chat_id=contacto.chat_id if contacto else int(chat_id),
         )
 
-    contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
     if contacto and contacto.telefono:
         _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
         return TelegramWebhookRespuesta(
@@ -2698,6 +2857,48 @@ def crear_boletin(
     return _respuesta_envio(codigo, registros)
 
 
+@router.get(
+    "/barridos",
+    response_model=list[BarridoResumenRespuesta],
+    tags=["barridos"],
+    summary="Listar barridos por tipo de alerta",
+)
+def listar_barridos(
+    tipo_alerta_id: int,
+    activo: bool | None = True,
+    db: Session = Depends(get_db),
+) -> list[BarridoResumenRespuesta]:
+    tipo_alerta = _obtener_tipo_alerta_activa(db, tipo_alerta_id)
+    filtros = [TelegramBarrido.tipo_alerta_id == tipo_alerta_id]
+    if activo is not None:
+        filtros.append(TelegramBarrido.activo.is_(activo))
+
+    filas = db.execute(
+        select(
+            TelegramBarrido,
+            func.count(TelegramBarridoRespuesta.id).label("total_respuestas"),
+        )
+        .outerjoin(
+            TelegramBarridoRespuesta,
+            and_(
+                TelegramBarridoRespuesta.barrido_id == TelegramBarrido.id,
+                TelegramBarridoRespuesta.activo.is_(True),
+            ),
+        )
+        .where(*filtros)
+        .group_by(TelegramBarrido.id)
+        .order_by(TelegramBarrido.fecha_barrido.desc(), TelegramBarrido.id.desc())
+    ).all()
+    return [
+        _barrido_resumen_respuesta(
+            barrido=barrido,
+            nombre_alerta=tipo_alerta.descripcion,
+            total_respuestas=int(total_respuestas),
+        )
+        for barrido, total_respuestas in filas
+    ]
+
+
 @router.post(
     "/barridos/solicitudes",
     response_model=EnvioFlujoRespuesta,
@@ -2710,16 +2911,30 @@ def solicitar_barrido(
     db: Session = Depends(get_db),
     sender: TelegramSender = Depends(get_telegram_sender),
 ) -> EnvioFlujoRespuesta:
+    tipo_alerta = _obtener_tipo_alerta_activa(db, payload.tipo_alerta_id)
+    if not _encuestas_alerta_activas(db, tipo_alerta.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No existen niveles configurados para este tipo de alerta.",
+        )
     contactos = _contactos_activos_por_telefono(db, payload.telefonos)
     fecha_barrido = payload.fecha_barrido or date.today()
     codigo = _codigo("BARRIDO", payload.codigo, fecha_barrido)
     mensaje = payload.mensaje or MENSAJE_SOLICITAR_UBICACION
+    barrido = _crear_cabecera_barrido(
+        db=db,
+        tipo_alerta_id=tipo_alerta.id,
+        codigo=codigo,
+        mensaje=mensaje,
+    )
     registros = []
     for contacto in contactos:
         _iniciar_reporte_barrido(
             db=db,
             contacto=contacto,
             sender=sender,
+            tipo_alerta_id=tipo_alerta.id,
+            barrido_id=barrido.id,
             codigo=codigo,
             mensaje=mensaje,
             fecha_barrido=fecha_barrido,
@@ -2734,7 +2949,7 @@ def solicitar_barrido(
         registros.append(registro)
     for registro in registros:
         db.refresh(registro)
-    return _respuesta_envio(codigo, registros)
+    return _respuesta_envio(codigo, registros, barrido_id=barrido.id)
 
 
 @router.post(
@@ -2749,6 +2964,7 @@ def registrar_respuesta_barrido(
     db: Session = Depends(get_db),
 ) -> BarridoGuardadoRespuesta:
     contacto = _contactos_activos_por_telefono(db, [payload.telefono])[0]
+    opcion = _obtener_alerta_encuesta_activa(db, payload.alerta_encuesta_id)
     filtros = [
         TelegramConsulta.contacto_id == contacto.id,
         TelegramConsulta.tipo_consulta == TIPO_BARRIDO,
@@ -2760,10 +2976,10 @@ def registrar_respuesta_barrido(
     registro = db.scalars(
         select(TelegramConsulta).where(*filtros).order_by(TelegramConsulta.fecha_consulta.desc())
     ).first()
-    registro, barrido, nivel_evento = _guardar_barrido(
+    registro, respuesta_barrido, barrido, opcion = _guardar_barrido(
         db=db,
         contacto=contacto,
-        nivel=payload.nivel_lluvia,
+        opcion=opcion,
         latitud=payload.latitud,
         longitud=payload.longitud,
         registro=registro,
@@ -2777,13 +2993,14 @@ def registrar_respuesta_barrido(
     return BarridoGuardadoRespuesta(
         id=registro.id,
         barrido_id=barrido.id,
+        barrido_respuesta_id=respuesta_barrido.id,
         telefono=contacto.telefono,
         codigo=registro.codigo,
         estado=registro.estado,
-        nivel_lluvia=payload.nivel_lluvia,
-        nivel_id=nivel_evento.id,
-        latitud=float(barrido.latitud),
-        longitud=float(barrido.longitud),
+        tipo_alerta_id=barrido.tipo_alerta_id,
+        alerta_encuesta_id=opcion.id,
+        latitud=float(respuesta_barrido.latitud),
+        longitud=float(respuesta_barrido.longitud),
     )
 
 
@@ -2791,13 +3008,27 @@ def registrar_respuesta_barrido(
     "/reportes/alertas/{tipo_alerta_id}",
     response_model=ReporteAlertaRespuesta,
     tags=["reportes"],
-    summary="Obtener reporte de alertas por tipo de alerta",
+    summary="Obtener reporte del ultimo barrido por tipo de alerta",
 )
 def obtener_reporte_alerta(
     tipo_alerta_id: int,
     db: Session = Depends(get_db),
 ) -> ReporteAlertaRespuesta:
     return _obtener_reporte_alerta(db, tipo_alerta_id)
+
+
+@router.get(
+    "/reportes/barridos/{barrido_id}",
+    response_model=ReporteAlertaRespuesta,
+    tags=["reportes"],
+    summary="Obtener reporte por tipo de alerta e id de barrido",
+)
+def obtener_reporte_barrido(
+    barrido_id: int,
+    tipo_alerta_id: int,
+    db: Session = Depends(get_db),
+) -> ReporteAlertaRespuesta:
+    return _obtener_reporte_barrido_por_tipo(db, tipo_alerta_id=tipo_alerta_id, barrido_id=barrido_id)
 
 
 @router.get(
