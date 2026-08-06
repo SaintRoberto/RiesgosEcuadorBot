@@ -163,6 +163,11 @@ def _asegurar_tablas_barridos(session: Session) -> None:
                 alerta_encuesta_id bigint NOT NULL,
                 latitud numeric(10,7) NOT NULL,
                 longitud numeric(10,7) NOT NULL,
+                descripcion text,
+                personas_en_riesgo boolean NOT NULL DEFAULT false,
+                cantidad_personas_riesgo integer NOT NULL DEFAULT 0,
+                foto_file_id text,
+                foto_file_unique_id text,
                 fecha_respuesta timestamp with time zone NOT NULL DEFAULT now(),
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
@@ -698,20 +703,6 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         )
         assert seleccion.status_code == 200
         assert seleccion.json()["estado"] == "REPORTE_BARRIDO_INICIADO"
-
-        ubicacion = client.post(
-            "/api/telegram/webhook",
-            json={
-                "update_id": 10,
-                "message": {
-                    "from": {"id": chat_id, "first_name": "GAD"},
-                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
-                    "location": {"latitude": -0.1806532, "longitude": -78.4678382},
-                },
-            },
-        )
-        assert ubicacion.status_code == 200
-        assert ubicacion.json()["estado"] == "UBICACION_RECIBIDA"
         assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
         assert "LLUVIA MUY FUERTE" in sender.polls[-1]["poll"]["options"][0]["text"]
         assert "LLUVIA FUERTE" in sender.polls[-1]["poll"]["options"][1]["text"]
@@ -719,7 +710,7 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         nivel = client.post(
             "/api/telegram/webhook",
             json={
-                "update_id": 11,
+                "update_id": 10,
                 "poll_answer": {
                     "poll_id": "poll-test",
                     "user": {"id": chat_id, "first_name": "GAD"},
@@ -728,13 +719,78 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
             },
         )
         assert nivel.status_code == 200
-        assert nivel.json()["estado"] == "BARRIDO_REGISTRADO"
+        assert nivel.json()["estado"] == "BARRIDO_NIVEL_RECIBIDO"
+
+        ubicacion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 11,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "location": {"latitude": -0.1806532, "longitude": -78.4678382},
+                },
+            },
+        )
+        assert ubicacion.status_code == 200
+        assert ubicacion.json()["estado"] == "BARRIDO_UBICACION_RECIBIDA"
+
+        descripcion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 12,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "text": "Comunidad San Jose, lluvia fuerte con acumulacion de agua.",
+                },
+            },
+        )
+        assert descripcion.status_code == 200
+        assert descripcion.json()["estado"] == "BARRIDO_DESCRIPCION_RECIBIDA"
+
+        riesgo = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 13,
+                "callback_query": {
+                    "id": "callback-barrido-riesgo-no",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {"chat": {"id": chat_id, "first_name": "GAD", "type": "private"}},
+                    "data": "ALERTA_RIESGO:NO",
+                },
+            },
+        )
+        assert riesgo.status_code == 200
+        assert riesgo.json()["estado"] == "BARRIDO_RIESGO_PERSONAS_CONFIRMADO"
+
+        foto = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 14,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    "photo": [{"file_id": "foto-barrido", "file_unique_id": "unique-barrido"}],
+                },
+            },
+        )
+        assert foto.status_code == 200
+        assert foto.json()["estado"] == "BARRIDO_REGISTRADO"
         assert sender.messages[-1]["reply_markup"] == {"remove_keyboard": True}
 
         row = session.execute(
             text(
                 """
-                SELECT ae.nombre AS nivel, br.latitud, br.longitud, b.tipo_alerta_id
+                SELECT
+                    ae.nombre AS nivel,
+                    br.latitud,
+                    br.longitud,
+                    b.tipo_alerta_id,
+                    br.descripcion,
+                    br.personas_en_riesgo,
+                    br.cantidad_personas_riesgo,
+                    br.foto_file_id
                 FROM telegram_barrido_respuestas br
                 JOIN telegram_barridos b ON b.id = br.barrido_id
                 JOIN telegram_contactos c ON c.id = br.contacto_id
@@ -748,6 +804,10 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         assert row["tipo_alerta_id"] == 6
         assert float(row["latitud"]) == -0.1806532
         assert float(row["longitud"]) == -78.4678382
+        assert row["descripcion"] == "Comunidad San Jose, lluvia fuerte con acumulacion de agua."
+        assert row["personas_en_riesgo"] is False
+        assert row["cantidad_personas_riesgo"] == 0
+        assert row["foto_file_id"] == "foto-barrido"
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -1280,11 +1340,29 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
         )
         assert ejecucion.status_code == 200
         assert ejecucion.json()["estado"] == "SCRIPT_BARRIDO_EJECUTADO"
+        assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
+        assert "MUY FUERTE" in sender.polls[-1]["poll"]["options"][0]["text"]
+        assert "Panico general" in sender.polls[-1]["poll"]["options"][0]["text"]
+        assert "LLUVIA" not in sender.polls[-1]["poll"]["options"][0]["text"]
+
+        nivel = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 84,
+                "poll_answer": {
+                    "poll_id": "poll-sismo",
+                    "user": {"id": chat_id, "first_name": "Admin"},
+                    "option_ids": [0],
+                },
+            },
+        )
+        assert nivel.status_code == 200
+        assert nivel.json()["estado"] == "BARRIDO_NIVEL_RECIBIDO"
 
         ubicacion = client.post(
             "/api/telegram/webhook",
             json={
-                "update_id": 84,
+                "update_id": 85,
                 "message": {
                     "from": {"id": chat_id, "first_name": "Admin"},
                     "chat": {"id": chat_id, "first_name": "Admin", "type": "private"},
@@ -1293,19 +1371,45 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
             },
         )
         assert ubicacion.status_code == 200
-        assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
-        assert "MUY FUERTE" in sender.polls[-1]["poll"]["options"][0]["text"]
-        assert "Panico general" in sender.polls[-1]["poll"]["options"][0]["text"]
-        assert "LLUVIA" not in sender.polls[-1]["poll"]["options"][0]["text"]
+        assert ubicacion.json()["estado"] == "BARRIDO_UBICACION_RECIBIDA"
+
+        descripcion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 86,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "Admin"},
+                    "chat": {"id": chat_id, "first_name": "Admin", "type": "private"},
+                    "text": "Comunidad Centro, sismo fuerte sin danos visibles.",
+                },
+            },
+        )
+        assert descripcion.status_code == 200
+        assert descripcion.json()["estado"] == "BARRIDO_DESCRIPCION_RECIBIDA"
+
+        riesgo = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 87,
+                "callback_query": {
+                    "id": "callback-barrido-sismo-riesgo-no",
+                    "from": {"id": chat_id, "first_name": "Admin"},
+                    "message": {"chat": {"id": chat_id, "first_name": "Admin", "type": "private"}},
+                    "data": "ALERTA_RIESGO:NO",
+                },
+            },
+        )
+        assert riesgo.status_code == 200
+        assert riesgo.json()["estado"] == "BARRIDO_RIESGO_PERSONAS_CONFIRMADO"
 
         respuesta = client.post(
             "/api/telegram/webhook",
             json={
-                "update_id": 85,
-                "poll_answer": {
-                    "poll_id": "poll-sismo",
-                    "user": {"id": chat_id, "first_name": "Admin"},
-                    "option_ids": [0],
+                "update_id": 88,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "Admin"},
+                    "chat": {"id": chat_id, "first_name": "Admin", "type": "private"},
+                    "photo": [{"file_id": "foto-sismo", "file_unique_id": "unique-sismo"}],
                 },
             },
         )
@@ -1315,7 +1419,7 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
         row = session.execute(
             text(
                 """
-                SELECT b.tipo_alerta_id, ae.nombre
+                SELECT b.tipo_alerta_id, ae.nombre, br.descripcion, br.foto_file_id
                 FROM telegram_barrido_respuestas br
                 JOIN telegram_barridos b ON b.id = br.barrido_id
                 JOIN alerta_encuesta ae ON ae.id = br.alerta_encuesta_id
@@ -1327,6 +1431,8 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
         ).mappings().one()
         assert row["tipo_alerta_id"] == 4
         assert row["nombre"] == "MUY FUERTE"
+        assert row["descripcion"] == "Comunidad Centro, sismo fuerte sin danos visibles."
+        assert row["foto_file_id"] == "foto-sismo"
     finally:
         flujos.get_settings = get_settings_original
         app.dependency_overrides.clear()

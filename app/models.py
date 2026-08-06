@@ -149,6 +149,11 @@ class TelegramBarridoRespuesta(Base):
     )
     latitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
     longitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    personas_en_riesgo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    cantidad_personas_riesgo: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    foto_file_id: Mapped[str | None] = mapped_column(Text)
+    foto_file_unique_id: Mapped[str | None] = mapped_column(Text)
     fecha_respuesta: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

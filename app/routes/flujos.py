@@ -63,6 +63,12 @@ PASO_ALERTA_DESCRIPCION = "ESPERANDO_DESCRIPCION_ALERTA"
 PASO_ALERTA_RIESGO_PERSONAS = "ESPERANDO_RIESGO_PERSONAS"
 PASO_ALERTA_CANTIDAD_PERSONAS = "ESPERANDO_CANTIDAD_PERSONAS"
 PASO_ALERTA_FOTO = "ESPERANDO_FOTO_ALERTA"
+PASO_BARRIDO_ENCUESTA = "ESPERANDO_ENCUESTA_BARRIDO"
+PASO_BARRIDO_UBICACION = "ESPERANDO_UBICACION_BARRIDO"
+PASO_BARRIDO_DESCRIPCION = "ESPERANDO_DESCRIPCION_BARRIDO"
+PASO_BARRIDO_RIESGO_PERSONAS = "ESPERANDO_RIESGO_PERSONAS_BARRIDO"
+PASO_BARRIDO_CANTIDAD_PERSONAS = "ESPERANDO_CANTIDAD_PERSONAS_BARRIDO"
+PASO_BARRIDO_FOTO = "ESPERANDO_FOTO_BARRIDO"
 PATRON_TELEFONO = re.compile(r"^\+?\d{8,15}$")
 PATRON_TELEFONO_EN_TEXTO = re.compile(r"\+?\d[\d\s().-]{6,}\d")
 PATRON_CANTIDAD_PERSONAS = re.compile(r"^\d{1,6}$")
@@ -118,7 +124,7 @@ MENSAJE_MENU_SCRIPTS = "Seleccione el script que desea ejecutar:"
 CALLBACK_SCRIPT_ALERTA_PREFIX = "SCRIPT_ALERTA:"
 TIPO_ALERTA_LLUVIAS_ID = 6
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
-SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: enviar su ubicacion y nivel de lluvia."
+SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: complete la encuesta de lluvias."
 MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
 QUICKCHART_URL = "https://quickchart.io/chart"
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
@@ -352,6 +358,11 @@ def _guardar_barrido(
     longitud: float,
     registro: TelegramConsulta | None,
     observacion: str | None = None,
+    descripcion: str | None = None,
+    personas_en_riesgo: bool = False,
+    cantidad_personas_riesgo: int = 0,
+    foto_file_id: str | None = None,
+    foto_file_unique_id: str | None = None,
 ) -> tuple[TelegramConsulta, TelegramBarridoRespuesta, TelegramBarrido, AlertaEncuesta]:
     if registro is None:
         registro = TelegramConsulta(
@@ -398,8 +409,22 @@ def _guardar_barrido(
             alerta_encuesta_id=opcion.id,
             latitud=Decimal(str(latitud)),
             longitud=Decimal(str(longitud)),
+            descripcion=descripcion,
+            personas_en_riesgo=personas_en_riesgo,
+            cantidad_personas_riesgo=cantidad_personas_riesgo,
+            foto_file_id=foto_file_id,
+            foto_file_unique_id=foto_file_unique_id,
         )
         db.add(respuesta_barrido)
+    else:
+        respuesta_barrido.alerta_encuesta_id = opcion.id
+        respuesta_barrido.latitud = Decimal(str(latitud))
+        respuesta_barrido.longitud = Decimal(str(longitud))
+        respuesta_barrido.descripcion = descripcion
+        respuesta_barrido.personas_en_riesgo = personas_en_riesgo
+        respuesta_barrido.cantidad_personas_riesgo = cantidad_personas_riesgo
+        respuesta_barrido.foto_file_id = foto_file_id
+        respuesta_barrido.foto_file_unique_id = foto_file_unique_id
 
     parametros.pop("ubicacion_pendiente", None)
     registro.parametros = parametros
@@ -411,6 +436,11 @@ def _guardar_barrido(
         "nivel": opcion.nombre,
         "latitud": latitud,
         "longitud": longitud,
+        "descripcion": descripcion,
+        "personas_en_riesgo": personas_en_riesgo,
+        "cantidad_personas_riesgo": cantidad_personas_riesgo,
+        "foto_file_id": foto_file_id,
+        "foto_file_unique_id": foto_file_unique_id,
         "observacion": observacion,
     }
     registro.estado = "COMPLETADA"
@@ -689,8 +719,8 @@ def _teclado_menu_scripts(db: Session) -> dict[str, Any]:
 def _teclado_riesgo_personas() -> dict[str, Any]:
     return {
         "inline_keyboard": [
-            [{"text": "Si, hay personas en riesgo", "callback_data": CALLBACK_ALERTA_RIESGO_SI}],
-            [{"text": "No existe riesgo para personas", "callback_data": CALLBACK_ALERTA_RIESGO_NO}],
+            [{"text": "SI", "callback_data": CALLBACK_ALERTA_RIESGO_SI}],
+            [{"text": "NO", "callback_data": CALLBACK_ALERTA_RIESGO_NO}],
         ],
     }
 
@@ -936,6 +966,7 @@ def _iniciar_reporte_barrido(
         "telefono": contacto.telefono,
         "fecha_barrido": fecha_barrido.isoformat() if fecha_barrido else None,
         "barrido_id": barrido.id,
+        "paso": PASO_BARRIDO_ENCUESTA,
         "tipo_alerta": {
             "id": tipo_alerta.id,
             "descripcion": tipo_alerta.descripcion,
@@ -963,15 +994,10 @@ def _iniciar_reporte_barrido(
         registro.parametros = parametros
         registro.estado = "PROCESANDO"
     db.commit()
+    db.refresh(registro)
     if mensaje:
-        _responder_si_es_posible(
-            sender,
-            contacto.chat_id,
-            mensaje,
-            reply_markup=_teclado_solicitar_ubicacion(),
-        )
-    else:
-        _solicitar_ubicacion_si_es_posible(sender, contacto.chat_id)
+        _responder_si_es_posible(sender, contacto.chat_id, mensaje)
+    _enviar_encuesta_barrido_si_es_posible(db, sender, contacto.chat_id, registro)
 
 
 def _ejecutar_script_barrido_alerta(
@@ -1002,7 +1028,7 @@ def _ejecutar_script_barrido_alerta(
     mensaje = (
         SCRIPT_BARRIDO_LLUVIA_MENSAJE
         if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID
-        else f"Recordatorio de reporte de barrido: enviar su ubicacion y nivel de {tipo_alerta.descripcion.lower()}."
+        else f"Recordatorio de reporte de barrido: complete la encuesta de {tipo_alerta.descripcion.lower()}."
     )
     barrido = _crear_cabecera_barrido(
         db=db,
@@ -1586,7 +1612,7 @@ def _seleccionar_reporte_barrido(
     _iniciar_reporte_barrido(db, contacto, sender)
     return TelegramWebhookRespuesta(
         estado="REPORTE_BARRIDO_INICIADO",
-        mensaje="Se solicito compartir ubicacion para el reporte de barrido.",
+        mensaje="Se envio la encuesta para el reporte de barrido.",
         contacto_id=contacto.id,
         telefono=contacto.telefono,
         chat_id=contacto.chat_id,
@@ -1680,6 +1706,112 @@ def _opcion_barrido_desde_texto(db: Session, registro: TelegramConsulta, texto: 
     return _opcion_barrido_desde_indice(db, registro, option_id)
 
 
+def _guardar_encuesta_barrido(db: Session, registro: TelegramConsulta, opcion: AlertaEncuesta) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["encuesta"] = {
+        "id": opcion.id,
+        "nombre": opcion.nombre,
+        "descripcion": opcion.descripcion,
+        "orden": opcion.orden,
+    }
+    parametros["paso"] = PASO_BARRIDO_UBICACION
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_ubicacion_barrido(db: Session, registro: TelegramConsulta, latitud: float, longitud: float) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["ubicacion"] = {"latitud": latitud, "longitud": longitud}
+    parametros.pop("ubicacion_pendiente", None)
+    parametros["paso"] = PASO_BARRIDO_DESCRIPCION
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_descripcion_barrido(db: Session, registro: TelegramConsulta, descripcion: str) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["descripcion"] = descripcion
+    parametros["paso"] = PASO_BARRIDO_RIESGO_PERSONAS
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_riesgo_personas_barrido(
+    db: Session,
+    registro: TelegramConsulta,
+    hay_personas_en_riesgo: bool,
+) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["personas_en_riesgo"] = hay_personas_en_riesgo
+    if hay_personas_en_riesgo:
+        parametros["paso"] = PASO_BARRIDO_CANTIDAD_PERSONAS
+    else:
+        parametros["cantidad_personas_riesgo"] = 0
+        parametros["paso"] = PASO_BARRIDO_FOTO
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_cantidad_personas_barrido(db: Session, registro: TelegramConsulta, cantidad: int) -> None:
+    parametros = dict(registro.parametros or {})
+    parametros["cantidad_personas_riesgo"] = cantidad
+    parametros["paso"] = PASO_BARRIDO_FOTO
+    registro.parametros = parametros
+    registro.estado = "PROCESANDO"
+    db.commit()
+
+
+def _guardar_foto_y_finalizar_barrido(
+    db: Session,
+    contacto: TelegramContacto,
+    registro: TelegramConsulta,
+    foto: dict[str, Any],
+    media_group_id: str | None = None,
+) -> tuple[TelegramConsulta, TelegramBarridoRespuesta, TelegramBarrido, AlertaEncuesta]:
+    parametros = dict(registro.parametros or {})
+    ubicacion = parametros.get("ubicacion") or {}
+    encuesta = parametros.get("encuesta") or {}
+    if "latitud" not in ubicacion or "longitud" not in ubicacion:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El reporte de barrido no tiene ubicacion completa.",
+        )
+    opcion_id = _entero_o_none(encuesta.get("id"))
+    if opcion_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El reporte de barrido no tiene nivel seleccionado.",
+        )
+    opcion = _obtener_alerta_encuesta_activa(db, opcion_id)
+    parametros["foto"] = {
+        "file_id": str(foto["file_id"]),
+        "file_unique_id": foto.get("file_unique_id"),
+    }
+    if media_group_id:
+        parametros["media_group_id"] = media_group_id
+    parametros["paso"] = "COMPLETADO"
+    registro.parametros = parametros
+
+    return _guardar_barrido(
+        db=db,
+        contacto=contacto,
+        opcion=opcion,
+        latitud=float(ubicacion["latitud"]),
+        longitud=float(ubicacion["longitud"]),
+        registro=registro,
+        observacion=f"Barrido completado por Telegram: {opcion.nombre}",
+        descripcion=str(parametros.get("descripcion") or "").strip(),
+        personas_en_riesgo=bool(parametros.get("personas_en_riesgo")),
+        cantidad_personas_riesgo=int(parametros.get("cantidad_personas_riesgo") or 0),
+        foto_file_id=str(foto["file_id"]),
+        foto_file_unique_id=foto.get("file_unique_id"),
+    )
+
+
 def _recibir_respuesta_encuesta_barrido(
     poll_answer: dict[str, Any],
     db: Session,
@@ -1718,39 +1850,16 @@ def _recibir_respuesta_encuesta_barrido(
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
         )
-    ubicacion = (registro.parametros or {}).get("ubicacion_pendiente") if registro else None
-    if not ubicacion:
-        _responder_si_es_posible(
-            sender,
-            contacto.chat_id,
-            MENSAJE_UBICACION_BARRIDO_REQUERIDA,
-        )
-        return TelegramWebhookRespuesta(
-            estado="UBICACION_REQUERIDA",
-            mensaje="Se recibio el nivel por encuesta, pero no hay ubicacion pendiente.",
-            contacto_id=contacto.id,
-            telefono=contacto.telefono,
-            chat_id=contacto.chat_id,
-        )
-
-    registro, respuesta_barrido, barrido, opcion_alerta = _guardar_barrido(
-        db=db,
-        contacto=contacto,
-        opcion=opcion_alerta,
-        latitud=float(ubicacion["latitud"]),
-        longitud=float(ubicacion["longitud"]),
-        registro=registro,
-        observacion=f"Nivel recibido por encuesta Telegram: {opcion_alerta.nombre}",
-    )
+    _guardar_encuesta_barrido(db, registro, opcion_alerta)
     _responder_si_es_posible(
         sender,
         contacto.chat_id,
-        "Barrido guardado correctamente.",
-        reply_markup=_quitar_teclado_personalizado(),
+        f"Por favor {_nombre_usuario(contacto)}, ayudame enviando tu ubicacion actual que es donde se esta desarrollando esta alerta:",
+        reply_markup=_teclado_solicitar_ubicacion(),
     )
     return TelegramWebhookRespuesta(
-        estado="BARRIDO_REGISTRADO",
-        mensaje=f"Barrido {barrido.id} guardado con nivel {opcion_alerta.nombre}.",
+        estado="BARRIDO_NIVEL_RECIBIDO",
+        mensaje="Nivel de barrido guardado temporalmente.",
         contacto_id=contacto.id,
         telefono=contacto.telefono,
         chat_id=contacto.chat_id,
@@ -1901,6 +2010,31 @@ def _recibir_callback_menu_principal(
         )
 
     if data in {CALLBACK_ALERTA_RIESGO_SI, CALLBACK_ALERTA_RIESGO_NO}:
+        registro_barrido = _consulta_barrido_activa_por_contacto(db, contacto.id)
+        parametros_barrido = dict(registro_barrido.parametros or {}) if registro_barrido else {}
+        if (
+            registro_barrido is not None
+            and parametros_barrido.get("flujo") == FLUJO_REPORTE_BARRIDO
+            and parametros_barrido.get("paso") == PASO_BARRIDO_RIESGO_PERSONAS
+        ):
+            hay_personas_en_riesgo = data == CALLBACK_ALERTA_RIESGO_SI
+            _guardar_riesgo_personas_barrido(
+                db=db,
+                registro=registro_barrido,
+                hay_personas_en_riesgo=hay_personas_en_riesgo,
+            )
+            if hay_personas_en_riesgo:
+                mensaje = "Ingrese solo numeros, maximo 6 digitos."
+            else:
+                mensaje = "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+            _responder_si_es_posible(sender, int(chat_id), mensaje)
+            return TelegramWebhookRespuesta(
+                estado="BARRIDO_RIESGO_PERSONAS_CONFIRMADO",
+                mensaje="Riesgo de personas guardado temporalmente para el barrido.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
         return _recibir_riesgo_personas_alerta(
             db=db,
             contacto=contacto,
@@ -2355,6 +2489,42 @@ def recibir_webhook_telegram(
                 telefono=contacto.telefono,
                 chat_id=contacto.chat_id,
             )
+        registro_barrido = _consulta_barrido_activa_por_contacto(db, contacto.id)
+        parametros_barrido = dict(registro_barrido.parametros or {}) if registro_barrido else {}
+        if (
+            registro_barrido is not None
+            and parametros_barrido.get("flujo") == FLUJO_REPORTE_BARRIDO
+            and parametros_barrido.get("paso") == PASO_BARRIDO_FOTO
+        ):
+            registro_barrido, respuesta_barrido, barrido, opcion_barrido = _guardar_foto_y_finalizar_barrido(
+                db=db,
+                contacto=contacto,
+                registro=registro_barrido,
+                foto=foto,
+                media_group_id=media_group_id_texto,
+            )
+            _enviar_recomendaciones_alerta_si_es_posible(
+                db=db,
+                sender=sender,
+                chat_id=int(chat_id),
+                tipo_alerta_id=barrido.tipo_alerta_id,
+            )
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                (
+                    f"Â¡Muchas gracias por tu reporte, {_nombre_usuario(contacto)}!, la SNGR agradece tu aporte "
+                    "para actuar oportunamente. Si conoces de otra alerta, no dudes en enviarme tu reporte."
+                ),
+                reply_markup=_quitar_teclado_personalizado(),
+            )
+            return TelegramWebhookRespuesta(
+                estado="BARRIDO_REGISTRADO",
+                mensaje=f"Barrido {barrido.id} guardado con nivel {opcion_barrido.nombre}.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
         if (
             registro_evento is not None
             and media_group_id_texto
@@ -2519,6 +2689,54 @@ def recibir_webhook_telegram(
             )
 
         parametros = dict(registro.parametros or {})
+        if parametros.get("flujo") == FLUJO_REPORTE_BARRIDO and parametros.get("paso") == PASO_BARRIDO_UBICACION:
+            _guardar_ubicacion_barrido(
+                db=db,
+                registro=registro,
+                latitud=float(location["latitude"]),
+                longitud=float(location["longitude"]),
+            )
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                (
+                    f"Gracias {_nombre_usuario(contacto)}, ahora por favor puedes redactar el nombre de la "
+                    "comunidad y una descripcion breve de lo que esta sucediendo:"
+                ),
+            )
+            return TelegramWebhookRespuesta(
+                estado="BARRIDO_UBICACION_RECIBIDA",
+                mensaje="Ubicacion guardada temporalmente para el barrido.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        if parametros.get("flujo") == FLUJO_REPORTE_BARRIDO:
+            paso_barrido = parametros.get("paso")
+            if paso_barrido == PASO_BARRIDO_ENCUESTA:
+                mensaje_barrido = "Primero seleccione el nivel de alerta en la encuesta."
+            elif paso_barrido == PASO_BARRIDO_DESCRIPCION:
+                mensaje_barrido = (
+                    f"Gracias {_nombre_usuario(contacto)}, ahora por favor puedes redactar el nombre de la "
+                    "comunidad y una descripcion breve de lo que esta sucediendo:"
+                )
+            elif paso_barrido == PASO_BARRIDO_RIESGO_PERSONAS:
+                mensaje_barrido = "Â¿Puedes visualizar si existen personas en riesgo?"
+            elif paso_barrido == PASO_BARRIDO_CANTIDAD_PERSONAS:
+                mensaje_barrido = "Aproximadamente, Â¿cuantas personas estan en riesgo?"
+            elif paso_barrido == PASO_BARRIDO_FOTO:
+                mensaje_barrido = "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+            else:
+                mensaje_barrido = "El reporte de barrido ya tiene una ubicacion registrada."
+            _responder_si_es_posible(sender, int(chat_id), mensaje_barrido)
+            return TelegramWebhookRespuesta(
+                estado="BARRIDO_UBICACION_IGNORADA",
+                mensaje="Se recibio ubicacion, pero no corresponde al paso actual del barrido.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+
         parametros["telefono"] = contacto.telefono
         parametros["flujo"] = FLUJO_REPORTE_BARRIDO
         parametros["ubicacion_pendiente"] = {
@@ -2657,6 +2875,127 @@ def recibir_webhook_telegram(
                     contacto_id=contacto_evento.id,
                     telefono=contacto_evento.telefono,
                     chat_id=contacto_evento.chat_id,
+                )
+        contacto_barrido_texto = contacto_evento
+        registro_barrido_texto = (
+            _consulta_barrido_activa_por_contacto(db, contacto_barrido_texto.id)
+            if contacto_barrido_texto is not None
+            else None
+        )
+        parametros_barrido_texto = dict(registro_barrido_texto.parametros or {}) if registro_barrido_texto else {}
+        paso_barrido_texto = parametros_barrido_texto.get("paso")
+        if (
+            contacto_barrido_texto
+            and registro_barrido_texto
+            and parametros_barrido_texto.get("flujo") == FLUJO_REPORTE_BARRIDO
+        ):
+            if paso_barrido_texto == PASO_BARRIDO_UBICACION:
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    (
+                        f"Por favor {_nombre_usuario(contacto_barrido_texto)}, ayudame enviando tu ubicacion actual "
+                        "que es donde se esta desarrollando esta alerta:"
+                    ),
+                    reply_markup=_teclado_solicitar_ubicacion(),
+                )
+                return TelegramWebhookRespuesta(
+                    estado="BARRIDO_UBICACION_REQUERIDA",
+                    mensaje="El barrido espera ubicacion.",
+                    contacto_id=contacto_barrido_texto.id,
+                    telefono=contacto_barrido_texto.telefono,
+                    chat_id=contacto_barrido_texto.chat_id,
+                )
+            if paso_barrido_texto == PASO_BARRIDO_DESCRIPCION:
+                if len(texto) > 200:
+                    _responder_si_es_posible(
+                        sender,
+                        int(chat_id),
+                        "La descripcion debe tener maximo 200 caracteres. Por favor envie una descripcion mas corta.",
+                    )
+                    return TelegramWebhookRespuesta(
+                        estado="BARRIDO_DESCRIPCION_MUY_LARGA",
+                        mensaje="La descripcion supera los 200 caracteres.",
+                        contacto_id=contacto_barrido_texto.id,
+                        telefono=contacto_barrido_texto.telefono,
+                        chat_id=contacto_barrido_texto.chat_id,
+                    )
+                if _contiene_emoji(texto):
+                    _responder_si_es_posible(
+                        sender,
+                        int(chat_id),
+                        "La descripcion no debe contener emojis. Por favor envie el texto sin emojis.",
+                    )
+                    return TelegramWebhookRespuesta(
+                        estado="BARRIDO_DESCRIPCION_CON_EMOJI",
+                        mensaje="La descripcion contiene emojis.",
+                        contacto_id=contacto_barrido_texto.id,
+                        telefono=contacto_barrido_texto.telefono,
+                        chat_id=contacto_barrido_texto.chat_id,
+                    )
+                _guardar_descripcion_barrido(db, registro_barrido_texto, texto)
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "Â¿Puedes visualizar si existen personas en riesgo?",
+                    reply_markup=_teclado_riesgo_personas(),
+                )
+                return TelegramWebhookRespuesta(
+                    estado="BARRIDO_DESCRIPCION_RECIBIDA",
+                    mensaje="Descripcion guardada temporalmente para el barrido.",
+                    contacto_id=contacto_barrido_texto.id,
+                    telefono=contacto_barrido_texto.telefono,
+                    chat_id=contacto_barrido_texto.chat_id,
+                )
+            if paso_barrido_texto == PASO_BARRIDO_RIESGO_PERSONAS:
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "Â¿Puedes visualizar si existen personas en riesgo?",
+                    reply_markup=_teclado_riesgo_personas(),
+                )
+                return TelegramWebhookRespuesta(
+                    estado="BARRIDO_RIESGO_PERSONAS_REQUERIDO",
+                    mensaje="El barrido espera seleccionar si existen personas en riesgo.",
+                    contacto_id=contacto_barrido_texto.id,
+                    telefono=contacto_barrido_texto.telefono,
+                    chat_id=contacto_barrido_texto.chat_id,
+                )
+            if paso_barrido_texto == PASO_BARRIDO_CANTIDAD_PERSONAS:
+                if not PATRON_CANTIDAD_PERSONAS.fullmatch(texto):
+                    _responder_si_es_posible(sender, int(chat_id), "Ingrese solo numeros, maximo 6 digitos.")
+                    return TelegramWebhookRespuesta(
+                        estado="BARRIDO_CANTIDAD_PERSONAS_INVALIDA",
+                        mensaje="La cantidad de personas en riesgo debe tener maximo 6 digitos numericos.",
+                        contacto_id=contacto_barrido_texto.id,
+                        telefono=contacto_barrido_texto.telefono,
+                        chat_id=contacto_barrido_texto.chat_id,
+                    )
+                _guardar_cantidad_personas_barrido(db, registro_barrido_texto, int(texto))
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                )
+                return TelegramWebhookRespuesta(
+                    estado="BARRIDO_CANTIDAD_PERSONAS_RECIBIDA",
+                    mensaje="Cantidad de personas en riesgo guardada temporalmente.",
+                    contacto_id=contacto_barrido_texto.id,
+                    telefono=contacto_barrido_texto.telefono,
+                    chat_id=contacto_barrido_texto.chat_id,
+                )
+            if paso_barrido_texto == PASO_BARRIDO_FOTO:
+                _responder_si_es_posible(
+                    sender,
+                    int(chat_id),
+                    "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                )
+                return TelegramWebhookRespuesta(
+                    estado="BARRIDO_FOTO_REQUERIDA",
+                    mensaje="El barrido espera una fotografia.",
+                    contacto_id=contacto_barrido_texto.id,
+                    telefono=contacto_barrido_texto.telefono,
+                    chat_id=contacto_barrido_texto.chat_id,
                 )
         if contacto_evento and registro_evento and paso_evento == PASO_EVENTO_FOTO:
             _responder_si_es_posible(sender, int(chat_id), "Primero envie una foto del evento.")
