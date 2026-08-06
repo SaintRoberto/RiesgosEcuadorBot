@@ -386,7 +386,8 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
     assert "/api/telegram/reportes/alertas/{tipo_alerta_id}" in paths
-    assert "/api/telegram/reportes/barridos/{barrido_id}" in paths
+    assert "/api/telegram/reportes/tipo-alerta/{tipo_alerta_id}/barridos/{barrido_id}" in paths
+    assert "/api/telegram/reportes/barridos/{barrido_id}" not in paths
     assert "/api/telegram/tipo-alertas" in paths
     assert "/api/telegram/tipo-alertas/{tipo_alerta_id}" in paths
     assert "/api/telegram/alerta-encuesta" in paths
@@ -1305,7 +1306,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url() -> None:
         assert barrido_item["nombre_alerta"] == "LLUVIAS"
         assert barrido_item["total_respuestas"] == 1
 
-        respuesta_por_barrido = client.get(f"/api/telegram/reportes/barridos/{barrido_id}?tipo_alerta_id=6")
+        respuesta_por_barrido = client.get(f"/api/telegram/reportes/tipo-alerta/6/barridos/{barrido_id}")
         assert respuesta_por_barrido.status_code == 200
         assert respuesta_por_barrido.json()["barrido_id"] == barrido_id
     finally:

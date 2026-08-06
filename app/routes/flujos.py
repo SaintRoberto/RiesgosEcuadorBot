@@ -3018,14 +3018,14 @@ def obtener_reporte_alerta(
 
 
 @router.get(
-    "/reportes/barridos/{barrido_id}",
+    "/reportes/tipo-alerta/{tipo_alerta_id}/barridos/{barrido_id}",
     response_model=ReporteAlertaRespuesta,
     tags=["reportes"],
     summary="Obtener reporte por tipo de alerta e id de barrido",
 )
 def obtener_reporte_barrido(
-    barrido_id: int,
     tipo_alerta_id: int,
+    barrido_id: int,
     db: Session = Depends(get_db),
 ) -> ReporteAlertaRespuesta:
     return _obtener_reporte_barrido_por_tipo(db, tipo_alerta_id=tipo_alerta_id, barrido_id=barrido_id)
