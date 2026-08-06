@@ -2026,7 +2026,7 @@ def _recibir_callback_menu_principal(
             if hay_personas_en_riesgo:
                 mensaje = "Ingrese solo numeros, maximo 6 digitos."
             else:
-                mensaje = "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+                mensaje = "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
             _responder_si_es_posible(sender, int(chat_id), mensaje)
             return TelegramWebhookRespuesta(
                 estado="BARRIDO_RIESGO_PERSONAS_CONFIRMADO",
@@ -2513,7 +2513,7 @@ def recibir_webhook_telegram(
                 sender,
                 int(chat_id),
                 (
-                    f"Â¡Muchas gracias por tu reporte, {_nombre_usuario(contacto)}!, la SNGR agradece tu aporte "
+                    f"¡Muchas gracias por tu reporte, {_nombre_usuario(contacto)}!, la SNGR agradece tu aporte "
                     "para actuar oportunamente. Si conoces de otra alerta, no dudes en enviarme tu reporte."
                 ),
                 reply_markup=_quitar_teclado_personalizado(),
@@ -2721,11 +2721,11 @@ def recibir_webhook_telegram(
                     "comunidad y una descripcion breve de lo que esta sucediendo:"
                 )
             elif paso_barrido == PASO_BARRIDO_RIESGO_PERSONAS:
-                mensaje_barrido = "Â¿Puedes visualizar si existen personas en riesgo?"
+                mensaje_barrido = "¿Puedes visualizar si existen personas en riesgo?"
             elif paso_barrido == PASO_BARRIDO_CANTIDAD_PERSONAS:
-                mensaje_barrido = "Aproximadamente, Â¿cuantas personas estan en riesgo?"
+                mensaje_barrido = "Aproximadamente, ¿cuantas personas estan en riesgo?"
             elif paso_barrido == PASO_BARRIDO_FOTO:
-                mensaje_barrido = "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+                mensaje_barrido = "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
             else:
                 mensaje_barrido = "El reporte de barrido ya tiene una ubicacion registrada."
             _responder_si_es_posible(sender, int(chat_id), mensaje_barrido)
@@ -2937,7 +2937,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "Â¿Puedes visualizar si existen personas en riesgo?",
+                    "¿Puedes visualizar si existen personas en riesgo?",
                     reply_markup=_teclado_riesgo_personas(),
                 )
                 return TelegramWebhookRespuesta(
@@ -2951,7 +2951,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "Â¿Puedes visualizar si existen personas en riesgo?",
+                    "¿Puedes visualizar si existen personas en riesgo?",
                     reply_markup=_teclado_riesgo_personas(),
                 )
                 return TelegramWebhookRespuesta(
@@ -2975,7 +2975,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                    "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
                 )
                 return TelegramWebhookRespuesta(
                     estado="BARRIDO_CANTIDAD_PERSONAS_RECIBIDA",
@@ -2988,7 +2988,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "Â¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                    "¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
                 )
                 return TelegramWebhookRespuesta(
                     estado="BARRIDO_FOTO_REQUERIDA",
