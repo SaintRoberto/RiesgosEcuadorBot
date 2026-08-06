@@ -1227,6 +1227,114 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         connection.close()
 
 
+def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    telefono = f"+593015{uuid4().int % 1000000:06d}"
+    chat_id = -(uuid4().int % 1000000000)
+    get_settings_original = flujos.get_settings
+
+    try:
+        _asegurar_catalogos_alertas(session)
+        _asegurar_tablas_barridos(session)
+        flujos.get_settings = lambda: type(
+            "SettingsStub",
+            (),
+            {"telegram_admin_user_ids": {chat_id}},
+        )()
+        session.execute(text("UPDATE telegram_contactos SET activo = false"))
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, activo)
+                VALUES
+                    (:telegram_user_id, :chat_id, :telefono, true)
+                """
+            ),
+            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        sender = FakeTelegramSender()
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
+        client = TestClient(app)
+
+        ejecucion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 83,
+                "callback_query": {
+                    "id": "callback-script-sismo",
+                    "from": {"id": chat_id, "first_name": "Admin"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "Admin", "type": "private"},
+                    },
+                    "data": "SCRIPT_ALERTA:4",
+                },
+            },
+        )
+        assert ejecucion.status_code == 200
+        assert ejecucion.json()["estado"] == "SCRIPT_BARRIDO_EJECUTADO"
+
+        ubicacion = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 84,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "Admin"},
+                    "chat": {"id": chat_id, "first_name": "Admin", "type": "private"},
+                    "location": {"latitude": -0.1806532, "longitude": -78.4678382},
+                },
+            },
+        )
+        assert ubicacion.status_code == 200
+        assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
+        assert "MUY FUERTE" in sender.polls[-1]["poll"]["options"][0]["text"]
+        assert "Panico general" in sender.polls[-1]["poll"]["options"][0]["text"]
+        assert "LLUVIA" not in sender.polls[-1]["poll"]["options"][0]["text"]
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 85,
+                "poll_answer": {
+                    "poll_id": "poll-sismo",
+                    "user": {"id": chat_id, "first_name": "Admin"},
+                    "option_ids": [0],
+                },
+            },
+        )
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "BARRIDO_REGISTRADO"
+
+        row = session.execute(
+            text(
+                """
+                SELECT b.tipo_alerta_id, ae.nombre
+                FROM telegram_barrido_respuestas br
+                JOIN telegram_barridos b ON b.id = br.barrido_id
+                JOIN alerta_encuesta ae ON ae.id = br.alerta_encuesta_id
+                JOIN telegram_contactos c ON c.id = br.contacto_id
+                WHERE c.telefono = :telefono
+                """
+            ),
+            {"telefono": telefono},
+        ).mappings().one()
+        assert row["tipo_alerta_id"] == 4
+        assert row["nombre"] == "MUY FUERTE"
+    finally:
+        flujos.get_settings = get_settings_original
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
 def test_endpoint_reporte_alerta_devuelve_json_y_chart_url() -> None:
     connection = engine.connect()
     transaction = connection.begin()

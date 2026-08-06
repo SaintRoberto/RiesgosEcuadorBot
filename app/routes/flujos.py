@@ -125,6 +125,7 @@ NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
 NOMINATIM_USER_AGENT = "RiesgosEcuadorBot/1.0"
 NOMINATIM_TIMEOUT_SECONDS = 5
 PAIS_ECUADOR_CODIGO = "ec"
+PREGUNTA_NIVEL_ALERTA = "Ingrese el NIVEL de alerta que usted visualiza:"
 MEDIA_TYPE_POR_EXTENSION = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -637,6 +638,37 @@ def _texto_opcion_encuesta_alerta(opcion: AlertaEncuesta) -> str:
     color = f"{opcion.color.strip()} " if opcion.color and opcion.color.strip() else ""
     descripcion = f": {opcion.descripcion}" if opcion.descripcion else ""
     return f"{color}{opcion.nombre}{descripcion}"
+
+
+def _textos_encuesta_alerta(opciones: list[AlertaEncuesta]) -> list[str]:
+    return [_texto_opcion_encuesta_alerta(opcion) for opcion in opciones]
+
+
+def _enviar_encuesta_por_tipo_alerta_si_es_posible(
+    db: Session,
+    sender: TelegramSender | None,
+    chat_id: int,
+    tipo_alerta_id: int,
+) -> list[AlertaEncuesta]:
+    opciones = _encuestas_alerta_activas(db, tipo_alerta_id)
+    if not opciones:
+        _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para este tipo de alerta.")
+        return []
+
+    textos = _textos_encuesta_alerta(opciones)
+    if sender is None:
+        return opciones
+    try:
+        sender.send_poll(
+            chat_id=chat_id,
+            question=PREGUNTA_NIVEL_ALERTA,
+            options=textos,
+        )
+    except TelegramDeliveryError:
+        lineas = [PREGUNTA_NIVEL_ALERTA]
+        lineas.extend(f"{indice + 1}) {texto}" for indice, texto in enumerate(textos))
+        _responder_si_es_posible(sender, chat_id, "\n".join(lineas))
+    return opciones
 
 
 def _teclado_menu_scripts(db: Session) -> dict[str, Any]:
@@ -1351,23 +1383,7 @@ def _enviar_encuesta_alerta_si_es_posible(
     chat_id: int,
     tipo_alerta_id: int,
 ) -> None:
-    opciones = _encuestas_alerta_activas(db, tipo_alerta_id)
-    if not opciones:
-        _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para este tipo de alerta.")
-        return
-    textos = [_texto_opcion_encuesta_alerta(opcion) for opcion in opciones]
-    if sender is None:
-        return
-    try:
-        sender.send_poll(
-            chat_id=chat_id,
-            question="Ingrese el NIVEL de alerta que usted visualiza:",
-            options=textos,
-        )
-    except TelegramDeliveryError:
-        lineas = ["Ingrese el NIVEL de alerta que usted visualiza:"]
-        lineas.extend(f"{indice + 1}) {texto}" for indice, texto in enumerate(textos))
-        _responder_si_es_posible(sender, chat_id, "\n".join(lineas))
+    _enviar_encuesta_por_tipo_alerta_si_es_posible(db, sender, chat_id, tipo_alerta_id)
 
 
 def _iniciar_reporte_alerta(
@@ -1616,25 +1632,13 @@ def _enviar_encuesta_barrido_si_es_posible(
         return
     tipo_alerta = (registro.parametros or {}).get("tipo_alerta") or {}
     tipo_alerta_id = _entero_o_none(tipo_alerta.get("id")) or TIPO_ALERTA_LLUVIAS_ID
-    opciones = _encuestas_alerta_activas(db, tipo_alerta_id)
+    opciones = _enviar_encuesta_por_tipo_alerta_si_es_posible(db, sender, chat_id, tipo_alerta_id)
     if not opciones:
-        _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para este barrido.")
         return
     parametros = dict(registro.parametros or {})
     parametros["encuesta_barrido_opciones"] = [opcion.id for opcion in opciones]
     registro.parametros = parametros
     db.commit()
-    textos = [_texto_opcion_encuesta_alerta(opcion) for opcion in opciones]
-    try:
-        sender.send_poll(
-            chat_id=chat_id,
-            question="Ingrese el NIVEL de alerta que usted visualiza:",
-            options=textos,
-        )
-    except TelegramDeliveryError:
-        lineas = ["Ingrese el NIVEL de alerta que usted visualiza:"]
-        lineas.extend(f"{indice + 1}) {texto}" for indice, texto in enumerate(textos))
-        _responder_si_es_posible(sender, chat_id, "\n".join(lineas))
 
 
 def _opcion_barrido_desde_indice(
@@ -1676,7 +1680,7 @@ def _opcion_barrido_desde_texto(db: Session, registro: TelegramConsulta, texto: 
     return _opcion_barrido_desde_indice(db, registro, option_id)
 
 
-def _recibir_respuesta_encuesta_lluvia(
+def _recibir_respuesta_encuesta_barrido(
     poll_answer: dict[str, Any],
     db: Session,
     sender: TelegramSender | None,
@@ -2176,7 +2180,7 @@ def recibir_webhook_telegram(
         respuesta_alerta = _recibir_respuesta_encuesta_alerta(poll_answer, db, sender)
         if respuesta_alerta is not None:
             return respuesta_alerta
-        return _recibir_respuesta_encuesta_lluvia(poll_answer, db, sender)
+        return _recibir_respuesta_encuesta_barrido(poll_answer, db, sender)
 
     callback_query = update.get("callback_query")
     if isinstance(callback_query, dict):
