@@ -3201,7 +3201,7 @@ def crear_boletin(
 
 
 @router.get(
-    "/barridos",
+    "/barridos/tipo-alerta/{tipo_alerta_id}",
     response_model=list[BarridoResumenRespuesta],
     tags=["barridos"],
     summary="Listar barridos por tipo de alerta",

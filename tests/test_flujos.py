@@ -387,7 +387,8 @@ def test_flujos_telegram_en_swagger() -> None:
 
     assert "/api/telegram/webhook" in paths
     assert "/api/telegram/boletines" in paths
-    assert "/api/telegram/barridos" in paths
+    assert "/api/telegram/barridos/tipo-alerta/{tipo_alerta_id}" in paths
+    assert "/api/telegram/barridos" not in paths
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
     assert "/api/telegram/reportes/alertas/{tipo_alerta_id}" in paths
@@ -1513,7 +1514,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url() -> None:
         assert cantidades["LLUVIA FUERTE"] == 1
         assert data["chart_url"].startswith("https://quickchart.io/chart?")
 
-        lista_barridos = client.get("/api/telegram/barridos?tipo_alerta_id=6")
+        lista_barridos = client.get("/api/telegram/barridos/tipo-alerta/6")
         assert lista_barridos.status_code == 200
         barrido_item = next(item for item in lista_barridos.json() if item["id"] == barrido_id)
         assert barrido_item["tipo_alerta_id"] == 6
