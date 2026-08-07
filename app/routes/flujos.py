@@ -396,6 +396,7 @@ def _guardar_barrido(
             status_code=status.HTTP_409_CONFLICT,
             detail="La opcion seleccionada no pertenece al tipo de alerta del barrido.",
         )
+    ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
 
     respuesta_barrido = db.scalars(
         select(TelegramBarridoRespuesta).where(
@@ -415,6 +416,9 @@ def _guardar_barrido(
             cantidad_personas_riesgo=cantidad_personas_riesgo,
             foto_file_id=foto_file_id,
             foto_file_unique_id=foto_file_unique_id,
+            provincia=ubicacion_admin["provincia"],
+            canton=ubicacion_admin["canton"],
+            parroquia=ubicacion_admin["parroquia"],
         )
         db.add(respuesta_barrido)
     else:
@@ -426,6 +430,9 @@ def _guardar_barrido(
         respuesta_barrido.cantidad_personas_riesgo = cantidad_personas_riesgo
         respuesta_barrido.foto_file_id = foto_file_id
         respuesta_barrido.foto_file_unique_id = foto_file_unique_id
+        respuesta_barrido.provincia = ubicacion_admin["provincia"]
+        respuesta_barrido.canton = ubicacion_admin["canton"]
+        respuesta_barrido.parroquia = ubicacion_admin["parroquia"]
 
     parametros.pop("ubicacion_pendiente", None)
     registro.parametros = parametros
@@ -442,6 +449,9 @@ def _guardar_barrido(
         "cantidad_personas_riesgo": cantidad_personas_riesgo,
         "foto_file_id": foto_file_id,
         "foto_file_unique_id": foto_file_unique_id,
+        "provincia": ubicacion_admin["provincia"],
+        "canton": ubicacion_admin["canton"],
+        "parroquia": ubicacion_admin["parroquia"],
         "observacion": observacion,
     }
     registro.estado = "COMPLETADA"
@@ -3381,16 +3391,17 @@ def listar_respuestas_barridos(
         )
     ).all()
 
-    ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
     respuesta: list[BarridoRespuestaDetalle] = []
+    hubo_ubicaciones_actualizadas = False
     for respuesta_barrido, barrido, nombre_alerta, nivel_alerta, telefono, nombres in filas:
         latitud = float(respuesta_barrido.latitud)
         longitud = float(respuesta_barrido.longitud)
-        cache_key = (latitud, longitud)
-        ubicacion_admin = ubicaciones_cache.get(cache_key)
-        if ubicacion_admin is None:
+        if respuesta_barrido.provincia is None and respuesta_barrido.canton is None and respuesta_barrido.parroquia is None:
             ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
-            ubicaciones_cache[cache_key] = ubicacion_admin
+            respuesta_barrido.provincia = ubicacion_admin["provincia"]
+            respuesta_barrido.canton = ubicacion_admin["canton"]
+            respuesta_barrido.parroquia = ubicacion_admin["parroquia"]
+            hubo_ubicaciones_actualizadas = True
 
         respuesta.append(
             BarridoRespuestaDetalle(
@@ -3409,12 +3420,14 @@ def listar_respuestas_barridos(
                 cantidad_personas_riesgo=int(respuesta_barrido.cantidad_personas_riesgo or 0),
                 latitud=latitud,
                 longitud=longitud,
-                provincia=ubicacion_admin["provincia"],
-                canton=ubicacion_admin["canton"],
-                parroquia=ubicacion_admin["parroquia"],
+                provincia=respuesta_barrido.provincia,
+                canton=respuesta_barrido.canton,
+                parroquia=respuesta_barrido.parroquia,
                 fecha_respuesta=_formatear_fecha_reporte(respuesta_barrido.fecha_respuesta),
             )
         )
+    if hubo_ubicaciones_actualizadas:
+        db.commit()
     return respuesta
 
 

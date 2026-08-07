@@ -168,6 +168,9 @@ def _asegurar_tablas_barridos(session: Session) -> None:
                 cantidad_personas_riesgo integer NOT NULL DEFAULT 0,
                 foto_file_id text,
                 foto_file_unique_id text,
+                provincia character varying(150),
+                canton character varying(150),
+                parroquia character varying(150),
                 fecha_respuesta timestamp with time zone NOT NULL DEFAULT now(),
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
@@ -507,7 +510,12 @@ def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
         connection.close()
 
 
-def test_flujo_boletin_barrido_y_seguimiento() -> None:
+def test_flujo_boletin_barrido_y_seguimiento(monkeypatch) -> None:
+    monkeypatch.setattr(
+        flujos,
+        "_resolver_ubicacion_administrativa",
+        lambda latitud, longitud: {"provincia": "Pichincha", "canton": "Quito", "parroquia": "Iñaquito"},
+    )
     with _client_con_contacto() as (client, telefono):
         boletin = client.post(
             "/api/telegram/boletines",
@@ -658,7 +666,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         connection.close()
 
 
-def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
+def test_webhook_guarda_barrido_con_ubicacion_y_encuesta(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -666,6 +674,11 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        monkeypatch.setattr(
+            flujos,
+            "_resolver_ubicacion_administrativa",
+            lambda latitud, longitud: {"provincia": "Guayas", "canton": "Guayaquil", "parroquia": "Tarqui"},
+        )
         _asegurar_catalogos_alertas(session)
         _asegurar_tablas_barridos(session)
         session.execute(
@@ -791,7 +804,10 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
                     br.descripcion,
                     br.personas_en_riesgo,
                     br.cantidad_personas_riesgo,
-                    br.foto_file_id
+                    br.foto_file_id,
+                    br.provincia,
+                    br.canton,
+                    br.parroquia
                 FROM telegram_barrido_respuestas br
                 JOIN telegram_barridos b ON b.id = br.barrido_id
                 JOIN telegram_contactos c ON c.id = br.contacto_id
@@ -809,6 +825,9 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta() -> None:
         assert row["personas_en_riesgo"] is False
         assert row["cantidad_personas_riesgo"] == 0
         assert row["foto_file_id"] == "foto-barrido"
+        assert row["provincia"] == "Guayas"
+        assert row["canton"] == "Guayaquil"
+        assert row["parroquia"] == "Tarqui"
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -1288,7 +1307,7 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         connection.close()
 
 
-def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
+def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -1297,6 +1316,11 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
     get_settings_original = flujos.get_settings
 
     try:
+        monkeypatch.setattr(
+            flujos,
+            "_resolver_ubicacion_administrativa",
+            lambda latitud, longitud: {"provincia": "Guayas", "canton": "Guayaquil", "parroquia": "Tarqui"},
+        )
         _asegurar_catalogos_alertas(session)
         _asegurar_tablas_barridos(session)
         flujos.get_settings = lambda: type(
@@ -1420,7 +1444,14 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
         row = session.execute(
             text(
                 """
-                SELECT b.tipo_alerta_id, ae.nombre, br.descripcion, br.foto_file_id
+                SELECT
+                    b.tipo_alerta_id,
+                    ae.nombre,
+                    br.descripcion,
+                    br.foto_file_id,
+                    br.provincia,
+                    br.canton,
+                    br.parroquia
                 FROM telegram_barrido_respuestas br
                 JOIN telegram_barridos b ON b.id = br.barrido_id
                 JOIN alerta_encuesta ae ON ae.id = br.alerta_encuesta_id
@@ -1434,6 +1465,9 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta() -> None:
         assert row["nombre"] == "MUY FUERTE"
         assert row["descripcion"] == "Comunidad Centro, sismo fuerte sin danos visibles."
         assert row["foto_file_id"] == "foto-sismo"
+        assert row["provincia"] == "Guayas"
+        assert row["canton"] == "Guayaquil"
+        assert row["parroquia"] == "Tarqui"
     finally:
         flujos.get_settings = get_settings_original
         app.dependency_overrides.clear()
@@ -1493,9 +1527,27 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
             text(
                 """
                 INSERT INTO telegram_barrido_respuestas
-                    (barrido_id, contacto_id, alerta_encuesta_id, latitud, longitud)
+                    (
+                        barrido_id,
+                        contacto_id,
+                        alerta_encuesta_id,
+                        latitud,
+                        longitud,
+                        provincia,
+                        canton,
+                        parroquia
+                    )
                 VALUES
-                    (:barrido_id, :contacto_id, :alerta_encuesta_id, -0.1806532, -78.4678382)
+                    (
+                        :barrido_id,
+                        :contacto_id,
+                        :alerta_encuesta_id,
+                        -0.1806532,
+                        -78.4678382,
+                        'Pichincha',
+                        'Quito',
+                        'Iñaquito'
+                    )
                 """
             ),
             {"barrido_id": barrido_id, "contacto_id": contacto_id, "alerta_encuesta_id": lluvia_fuerte_id},

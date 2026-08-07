@@ -154,6 +154,9 @@ class TelegramBarridoRespuesta(Base):
     cantidad_personas_riesgo: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     foto_file_id: Mapped[str | None] = mapped_column(Text)
     foto_file_unique_id: Mapped[str | None] = mapped_column(Text)
+    provincia: Mapped[str | None] = mapped_column(String(150))
+    canton: Mapped[str | None] = mapped_column(String(150))
+    parroquia: Mapped[str | None] = mapped_column(String(150))
     fecha_respuesta: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
