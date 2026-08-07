@@ -80,6 +80,24 @@ def test_extrae_ubicacion_administrativa_con_fallback_de_nominatim() -> None:
     }
 
 
+def test_extrae_parroquia_mas_especifica_que_canton() -> None:
+    ubicacion = flujos._extraer_ubicacion_administrativa_desde_address(
+        {
+            "suburb": "La Puntilla",
+            "town": "Samborondon",
+            "county": "Samborondon",
+            "state": "Guayas",
+            "country_code": "ec",
+        }
+    )
+
+    assert ubicacion == {
+        "provincia": "Guayas",
+        "canton": "Samborondon",
+        "parroquia": "La Puntilla",
+    }
+
+
 def _asegurar_tabla_eventos(session: Session) -> None:
     session.execute(
         text(
@@ -1559,7 +1577,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         monkeypatch.setattr(
             flujos,
             "_resolver_ubicacion_administrativa",
-            lambda latitud, longitud: {"provincia": "Pichincha", "canton": "Quito", "parroquia": "Iñaquito"},
+            lambda latitud, longitud: {"provincia": "Pichincha", "canton": "Quito", "parroquia": "Inaquito"},
         )
         _asegurar_catalogos_alertas(session)
         _asegurar_tablas_barridos(session)
@@ -1618,7 +1636,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
                         -78.4678382,
                         'Pichincha',
                         'Quito',
-                        'Iñaquito'
+                        NULL
                     )
                 """
             ),
@@ -1665,7 +1683,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         assert respuesta_item["longitud"] == -78.4678382
         assert respuesta_item["provincia"] == "Pichincha"
         assert respuesta_item["canton"] == "Quito"
-        assert respuesta_item["parroquia"] == "Iñaquito"
+        assert respuesta_item["parroquia"] == "Inaquito"
     finally:
         app.dependency_overrides.clear()
         session.close()

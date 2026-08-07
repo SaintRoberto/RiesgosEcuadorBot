@@ -178,17 +178,59 @@ def _texto_address(address: dict[str, Any], campos: list[str]) -> str | None:
     return None
 
 
+def _normalizar_texto_ubicacion(valor: str | None) -> str:
+    if not valor:
+        return ""
+    texto = unicodedata.normalize("NFKD", valor)
+    texto = "".join(caracter for caracter in texto if not unicodedata.combining(caracter))
+    return re.sub(r"\s+", " ", texto).strip().casefold()
+
+
+def _texto_address_distinto_de(
+    address: dict[str, Any],
+    campos: list[str],
+    valores_excluidos: list[str | None],
+) -> str | None:
+    excluidos = {_normalizar_texto_ubicacion(valor) for valor in valores_excluidos if valor}
+    for campo in campos:
+        valor = address.get(campo)
+        if not isinstance(valor, str) or not valor.strip():
+            continue
+        valor_limpio = valor.strip()
+        if _normalizar_texto_ubicacion(valor_limpio) not in excluidos:
+            return valor_limpio
+    return None
+
+
 def _extraer_ubicacion_administrativa_desde_address(address: dict[str, Any]) -> dict[str, str | None]:
     if str(address.get("country_code") or "").lower() not in {"", PAIS_ECUADOR_CODIGO}:
         return _ubicacion_admin_vacia()
 
+    provincia = _texto_address(address, ["state", "region"])
+    canton = _texto_address(address, ["county", "city", "municipality", "town"])
+    parroquia = _texto_address_distinto_de(
+        address,
+        [
+            "city_district",
+            "village",
+            "suburb",
+            "residential",
+            "neighbourhood",
+            "quarter",
+            "borough",
+            "hamlet",
+            "town",
+            "municipality",
+        ],
+        [canton],
+    )
+    if parroquia is None:
+        parroquia = _texto_address(address, ["city_district", "village", "suburb", "town", "municipality"])
+
     return {
-        "provincia": _texto_address(address, ["state", "region"]),
-        "canton": _texto_address(address, ["county", "city", "municipality", "town"]),
-        "parroquia": _texto_address(
-            address,
-            ["city_district", "village", "town", "municipality", "suburb", "neighbourhood"],
-        ),
+        "provincia": provincia,
+        "canton": canton,
+        "parroquia": parroquia,
     }
 
 
@@ -3482,12 +3524,17 @@ def listar_respuestas_barridos(
     for respuesta_barrido, barrido, nombre_alerta, nivel_alerta, telefono, nombres in filas:
         latitud = float(respuesta_barrido.latitud)
         longitud = float(respuesta_barrido.longitud)
-        if respuesta_barrido.provincia is None and respuesta_barrido.canton is None and respuesta_barrido.parroquia is None:
+        if (
+            respuesta_barrido.provincia is None
+            or respuesta_barrido.canton is None
+            or respuesta_barrido.parroquia is None
+        ):
             ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
-            respuesta_barrido.provincia = ubicacion_admin["provincia"]
-            respuesta_barrido.canton = ubicacion_admin["canton"]
-            respuesta_barrido.parroquia = ubicacion_admin["parroquia"]
-            hubo_ubicaciones_actualizadas = True
+            if ubicacion_admin["provincia"] or ubicacion_admin["canton"] or ubicacion_admin["parroquia"]:
+                respuesta_barrido.provincia = ubicacion_admin["provincia"] or respuesta_barrido.provincia
+                respuesta_barrido.canton = ubicacion_admin["canton"] or respuesta_barrido.canton
+                respuesta_barrido.parroquia = ubicacion_admin["parroquia"] or respuesta_barrido.parroquia
+                hubo_ubicaciones_actualizadas = True
 
         respuesta.append(
             BarridoRespuestaDetalle(
