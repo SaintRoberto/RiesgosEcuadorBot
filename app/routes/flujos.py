@@ -23,6 +23,7 @@ from app.models import (
     TelegramContacto,
     TelegramEvento,
     TipoAlerta,
+    TipoFlujo,
 )
 from app.schemas import (
     AlertaEncuestaRespuesta,
@@ -42,6 +43,7 @@ from app.schemas import (
     SolicitarBarridoRequest,
     TelegramWebhookRespuesta,
     TipoAlertaRespuesta,
+    TipoFlujoRespuesta,
 )
 from app.telegram import TelegramDeliveryError, TelegramSender, get_optional_telegram_sender, get_telegram_sender
 
@@ -124,6 +126,9 @@ CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
 MENSAJE_MENU_SCRIPTS = "Seleccione el script que desea ejecutar:"
 CALLBACK_SCRIPT_ALERTA_PREFIX = "SCRIPT_ALERTA:"
 TIPO_ALERTA_LLUVIAS_ID = 6
+TIPO_FLUJO_ALERTA = "ALERTA"
+TIPO_FLUJO_BARRIDO = "BARRIDO"
+TIPO_FLUJO_AMBOS = "AMBOS"
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
 SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: complete la encuesta de lluvias."
 MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
@@ -279,10 +284,20 @@ def _tipo_alerta_respuesta(tipo_alerta: TipoAlerta) -> TipoAlertaRespuesta:
     )
 
 
+def _tipo_flujo_respuesta(tipo_flujo: TipoFlujo) -> TipoFlujoRespuesta:
+    return TipoFlujoRespuesta(
+        id=tipo_flujo.id,
+        codigo=tipo_flujo.codigo,
+        descripcion=tipo_flujo.descripcion,
+        activo=tipo_flujo.activo,
+    )
+
+
 def _alerta_encuesta_respuesta(alerta_encuesta: AlertaEncuesta) -> AlertaEncuestaRespuesta:
     return AlertaEncuestaRespuesta(
         id=alerta_encuesta.id,
         tipo_alerta_id=alerta_encuesta.tipo_alerta_id,
+        tipo_flujo_id=alerta_encuesta.tipo_flujo_id,
         nombre=alerta_encuesta.nombre,
         descripcion=alerta_encuesta.descripcion,
         color=alerta_encuesta.color,
@@ -331,6 +346,13 @@ def _obtener_alerta_encuesta_activa(db: Session, alerta_encuesta_id: int) -> Ale
             detail="Opcion de encuesta no encontrada o inactiva.",
         )
     return opcion
+
+
+def _opcion_encuesta_permite_flujo(db: Session, opcion: AlertaEncuesta, codigo_flujo: str) -> bool:
+    tipo_flujo = db.get(TipoFlujo, opcion.tipo_flujo_id)
+    if tipo_flujo is None or not tipo_flujo.activo:
+        return False
+    return tipo_flujo.codigo in {codigo_flujo, TIPO_FLUJO_AMBOS}
 
 
 def _crear_cabecera_barrido(
@@ -395,6 +417,11 @@ def _guardar_barrido(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="La opcion seleccionada no pertenece al tipo de alerta del barrido.",
+        )
+    if not _opcion_encuesta_permite_flujo(db, opcion, TIPO_FLUJO_BARRIDO):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La opcion seleccionada no esta configurada para barridos.",
         )
     ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
 
@@ -627,17 +654,28 @@ def _teclado_menu_reportes(db: Session) -> dict[str, Any]:
     }
 
 
-def _encuestas_alerta_activas(db: Session, tipo_alerta_id: int) -> list[AlertaEncuesta]:
+def _encuestas_por_flujo_activas(db: Session, tipo_alerta_id: int, codigo_flujo: str) -> list[AlertaEncuesta]:
     return list(
         db.scalars(
             select(AlertaEncuesta)
+            .join(TipoFlujo, TipoFlujo.id == AlertaEncuesta.tipo_flujo_id)
             .where(
                 AlertaEncuesta.tipo_alerta_id == tipo_alerta_id,
                 AlertaEncuesta.activo.is_(True),
+                TipoFlujo.activo.is_(True),
+                TipoFlujo.codigo.in_([codigo_flujo, TIPO_FLUJO_AMBOS]),
             )
-            .order_by(AlertaEncuesta.orden)
+            .order_by(AlertaEncuesta.orden, AlertaEncuesta.id)
         )
     )
+
+
+def _encuestas_alerta_activas(db: Session, tipo_alerta_id: int) -> list[AlertaEncuesta]:
+    return _encuestas_por_flujo_activas(db, tipo_alerta_id, TIPO_FLUJO_ALERTA)
+
+
+def _encuestas_barrido_activas(db: Session, tipo_alerta_id: int) -> list[AlertaEncuesta]:
+    return _encuestas_por_flujo_activas(db, tipo_alerta_id, TIPO_FLUJO_BARRIDO)
 
 
 def _recomendaciones_alerta_activas(db: Session, tipo_alerta_id: int | None) -> list[AlertaRecomendacion]:
@@ -690,8 +728,9 @@ def _enviar_encuesta_por_tipo_alerta_si_es_posible(
     sender: TelegramSender | None,
     chat_id: int,
     tipo_alerta_id: int,
+    codigo_flujo: str = TIPO_FLUJO_ALERTA,
 ) -> list[AlertaEncuesta]:
-    opciones = _encuestas_alerta_activas(db, tipo_alerta_id)
+    opciones = _encuestas_por_flujo_activas(db, tipo_alerta_id, codigo_flujo)
     if not opciones:
         _responder_si_es_posible(sender, chat_id, "No existen niveles configurados para este tipo de alerta.")
         return []
@@ -1017,7 +1056,7 @@ def _ejecutar_script_barrido_alerta(
     tipo_alerta_id: int,
 ) -> tuple[int, TelegramBarrido]:
     tipo_alerta = _obtener_tipo_alerta_activa(db, tipo_alerta_id)
-    if not _encuestas_alerta_activas(db, tipo_alerta.id):
+    if not _encuestas_barrido_activas(db, tipo_alerta.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="No existen niveles configurados para este tipo de alerta.",
@@ -1088,6 +1127,7 @@ def _obtener_reporte_barrido(db: Session, barrido: TelegramBarrido) -> ReporteAl
             AlertaEncuesta.color,
             func.count(TelegramBarridoRespuesta.id).label("cantidad"),
         )
+        .join(TipoFlujo, TipoFlujo.id == AlertaEncuesta.tipo_flujo_id)
         .outerjoin(
             TelegramBarridoRespuesta,
             and_(
@@ -1099,6 +1139,8 @@ def _obtener_reporte_barrido(db: Session, barrido: TelegramBarrido) -> ReporteAl
         .where(
             AlertaEncuesta.tipo_alerta_id == barrido.tipo_alerta_id,
             AlertaEncuesta.activo.is_(True),
+            TipoFlujo.activo.is_(True),
+            TipoFlujo.codigo.in_([TIPO_FLUJO_BARRIDO, TIPO_FLUJO_AMBOS]),
         )
         .group_by(AlertaEncuesta.id, AlertaEncuesta.nombre, AlertaEncuesta.descripcion, AlertaEncuesta.color)
         .order_by(AlertaEncuesta.orden)
@@ -1669,7 +1711,13 @@ def _enviar_encuesta_barrido_si_es_posible(
         return
     tipo_alerta = (registro.parametros or {}).get("tipo_alerta") or {}
     tipo_alerta_id = _entero_o_none(tipo_alerta.get("id")) or TIPO_ALERTA_LLUVIAS_ID
-    opciones = _enviar_encuesta_por_tipo_alerta_si_es_posible(db, sender, chat_id, tipo_alerta_id)
+    opciones = _enviar_encuesta_por_tipo_alerta_si_es_posible(
+        db,
+        sender,
+        chat_id,
+        tipo_alerta_id,
+        codigo_flujo=TIPO_FLUJO_BARRIDO,
+    )
     if not opciones:
         return
     parametros = dict(registro.parametros or {})
@@ -1689,7 +1737,12 @@ def _opcion_barrido_desde_indice(
     opcion = db.get(AlertaEncuesta, int(opcion_ids[option_id]))
     tipo_alerta = (registro.parametros or {}).get("tipo_alerta") or {}
     tipo_alerta_id = _entero_o_none(tipo_alerta.get("id")) or TIPO_ALERTA_LLUVIAS_ID
-    if opcion is None or not opcion.activo or opcion.tipo_alerta_id != tipo_alerta_id:
+    if (
+        opcion is None
+        or not opcion.activo
+        or opcion.tipo_alerta_id != tipo_alerta_id
+        or not _opcion_encuesta_permite_flujo(db, opcion, TIPO_FLUJO_BARRIDO)
+    ):
         return None
     return opcion
 
@@ -2220,6 +2273,23 @@ def obtener_tipo_alerta(
 
 
 @router.get(
+    "/tipo-flujos",
+    response_model=list[TipoFlujoRespuesta],
+    tags=["tipo alertas"],
+    summary="Listar tipos de flujo de encuesta",
+)
+def listar_tipo_flujos(
+    activo: bool | None = True,
+    db: Session = Depends(get_db),
+) -> list[TipoFlujoRespuesta]:
+    filtros = []
+    if activo is not None:
+        filtros.append(TipoFlujo.activo.is_(activo))
+    tipos_flujo = list(db.scalars(select(TipoFlujo).where(*filtros).order_by(TipoFlujo.id)))
+    return [_tipo_flujo_respuesta(tipo_flujo) for tipo_flujo in tipos_flujo]
+
+
+@router.get(
     "/alerta-encuesta",
     response_model=list[AlertaEncuestaRespuesta],
     tags=["tipo alertas"],
@@ -2227,6 +2297,7 @@ def obtener_tipo_alerta(
 )
 def listar_alerta_encuesta(
     tipo_alerta_id: int | None = None,
+    tipo_flujo_codigo: str | None = None,
     activo: bool | None = True,
     db: Session = Depends(get_db),
 ) -> list[AlertaEncuestaRespuesta]:
@@ -2235,9 +2306,18 @@ def listar_alerta_encuesta(
         filtros.append(AlertaEncuesta.tipo_alerta_id == tipo_alerta_id)
     if activo is not None:
         filtros.append(AlertaEncuesta.activo.is_(activo))
+    consulta = select(AlertaEncuesta)
+    if tipo_flujo_codigo:
+        consulta = consulta.join(TipoFlujo, TipoFlujo.id == AlertaEncuesta.tipo_flujo_id)
+        filtros.extend(
+            [
+                TipoFlujo.activo.is_(True),
+                TipoFlujo.codigo.in_([tipo_flujo_codigo.upper(), TIPO_FLUJO_AMBOS]),
+            ]
+        )
     opciones = list(
         db.scalars(
-            select(AlertaEncuesta)
+            consulta
             .where(*filtros)
             .order_by(AlertaEncuesta.tipo_alerta_id, AlertaEncuesta.orden)
         )
@@ -2253,6 +2333,7 @@ def listar_alerta_encuesta(
 )
 def listar_encuesta_por_tipo_alerta(
     tipo_alerta_id: int,
+    tipo_flujo_codigo: str | None = TIPO_FLUJO_ALERTA,
     activo: bool | None = True,
     db: Session = Depends(get_db),
 ) -> list[AlertaEncuestaRespuesta]:
@@ -2261,7 +2342,12 @@ def listar_encuesta_por_tipo_alerta(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tipo de alerta no encontrado.",
         )
-    return listar_alerta_encuesta(tipo_alerta_id=tipo_alerta_id, activo=activo, db=db)
+    return listar_alerta_encuesta(
+        tipo_alerta_id=tipo_alerta_id,
+        tipo_flujo_codigo=tipo_flujo_codigo,
+        activo=activo,
+        db=db,
+    )
 
 
 @router.get(
@@ -3266,7 +3352,7 @@ def solicitar_barrido(
     sender: TelegramSender = Depends(get_telegram_sender),
 ) -> EnvioFlujoRespuesta:
     tipo_alerta = _obtener_tipo_alerta_activa(db, payload.tipo_alerta_id)
-    if not _encuestas_alerta_activas(db, tipo_alerta.id):
+    if not _encuestas_barrido_activas(db, tipo_alerta.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="No existen niveles configurados para este tipo de alerta.",

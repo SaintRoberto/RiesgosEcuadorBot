@@ -44,17 +44,37 @@ class TipoAlerta(Base):
     )
 
 
+class TipoFlujo(Base):
+    __tablename__ = "tipo_flujo"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    codigo: Mapped[str] = mapped_column(String(30), nullable=False, unique=True)
+    descripcion: Mapped[str] = mapped_column(String(100), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    fecha_creacion: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class AlertaEncuesta(Base):
     __tablename__ = "alerta_encuesta"
     __table_args__ = (
         Index("idx_alerta_encuesta_tipo_alerta", "tipo_alerta_id"),
-        Index("uq_alerta_encuesta_tipo_orden", "tipo_alerta_id", "orden", unique=True),
+        Index("idx_alerta_encuesta_tipo_flujo", "tipo_flujo_id"),
+        Index("uq_alerta_encuesta_tipo_flujo_orden", "tipo_alerta_id", "tipo_flujo_id", "orden", unique=True),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     tipo_alerta_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("tipo_alertas.id", name="fk_alerta_encuesta_tipo_alerta"),
+        nullable=False,
+    )
+    tipo_flujo_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("tipo_flujo.id", name="fk_alerta_encuesta_tipo_flujo"),
         nullable=False,
     )
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
@@ -149,14 +169,14 @@ class TelegramBarridoRespuesta(Base):
     )
     latitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
     longitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
+    provincia: Mapped[str | None] = mapped_column(String(150))
+    canton: Mapped[str | None] = mapped_column(String(150))
+    parroquia: Mapped[str | None] = mapped_column(String(150))
     descripcion: Mapped[str | None] = mapped_column(Text)
     personas_en_riesgo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     cantidad_personas_riesgo: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     foto_file_id: Mapped[str | None] = mapped_column(Text)
     foto_file_unique_id: Mapped[str | None] = mapped_column(Text)
-    provincia: Mapped[str | None] = mapped_column(String(150))
-    canton: Mapped[str | None] = mapped_column(String(150))
-    parroquia: Mapped[str | None] = mapped_column(String(150))
     fecha_respuesta: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

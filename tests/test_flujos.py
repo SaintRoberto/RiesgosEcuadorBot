@@ -163,14 +163,14 @@ def _asegurar_tablas_barridos(session: Session) -> None:
                 alerta_encuesta_id bigint NOT NULL,
                 latitud numeric(10,7) NOT NULL,
                 longitud numeric(10,7) NOT NULL,
+                provincia character varying(150),
+                canton character varying(150),
+                parroquia character varying(150),
                 descripcion text,
                 personas_en_riesgo boolean NOT NULL DEFAULT false,
                 cantidad_personas_riesgo integer NOT NULL DEFAULT 0,
                 foto_file_id text,
                 foto_file_unique_id text,
-                provincia character varying(150),
-                canton character varying(150),
-                parroquia character varying(150),
                 fecha_respuesta timestamp with time zone NOT NULL DEFAULT now(),
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
@@ -253,10 +253,41 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
     session.execute(
         text(
             """
+            CREATE TABLE IF NOT EXISTS public.tipo_flujo
+            (
+                id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                codigo varchar(30) NOT NULL UNIQUE,
+                descripcion varchar(100) NOT NULL,
+                activo boolean NOT NULL DEFAULT true,
+                fecha_creacion timestamp with time zone NOT NULL DEFAULT now()
+            )
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO public.tipo_flujo (id, codigo, descripcion)
+            OVERRIDING SYSTEM VALUE
+            VALUES
+                (1, 'ALERTA', 'Reporte de alerta'),
+                (2, 'BARRIDO', 'Reporte de barrido'),
+                (3, 'AMBOS', 'Reporte de alerta y barrido')
+            ON CONFLICT (id) DO UPDATE
+            SET codigo = EXCLUDED.codigo,
+                descripcion = EXCLUDED.descripcion,
+                activo = true
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
             CREATE TABLE IF NOT EXISTS public.alerta_encuesta
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 tipo_alerta_id bigint NOT NULL,
+                tipo_flujo_id bigint NOT NULL DEFAULT 3,
                 nombre varchar(150) NOT NULL,
                 descripcion text,
                 color varchar(20),
@@ -266,13 +297,37 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
                 CONSTRAINT fk_alerta_encuesta_tipo_alerta
                     FOREIGN KEY (tipo_alerta_id)
                     REFERENCES public.tipo_alertas (id),
-                CONSTRAINT uq_alerta_encuesta_tipo_orden
-                    UNIQUE (tipo_alerta_id, orden)
+                CONSTRAINT fk_alerta_encuesta_tipo_flujo
+                    FOREIGN KEY (tipo_flujo_id)
+                    REFERENCES public.tipo_flujo (id),
+                CONSTRAINT uq_alerta_encuesta_tipo_flujo_orden
+                    UNIQUE (tipo_alerta_id, tipo_flujo_id, orden)
             )
             """
         )
     )
     session.execute(text("ALTER TABLE public.alerta_encuesta ADD COLUMN IF NOT EXISTS color varchar(20)"))
+    session.execute(text("ALTER TABLE public.alerta_encuesta ADD COLUMN IF NOT EXISTS tipo_flujo_id bigint"))
+    session.execute(
+        text(
+            """
+            UPDATE public.alerta_encuesta
+            SET tipo_flujo_id = 3
+            WHERE tipo_flujo_id IS NULL
+            """
+        )
+    )
+    session.execute(text("ALTER TABLE public.alerta_encuesta ALTER COLUMN tipo_flujo_id SET NOT NULL"))
+    session.execute(text("ALTER TABLE public.alerta_encuesta DROP CONSTRAINT IF EXISTS uq_alerta_encuesta_tipo_orden"))
+    session.execute(text("DROP INDEX IF EXISTS public.uq_alerta_encuesta_tipo_orden"))
+    session.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_alerta_encuesta_tipo_flujo_orden
+                ON public.alerta_encuesta (tipo_alerta_id, tipo_flujo_id, orden)
+            """
+        )
+    )
     session.execute(
         text(
             """
@@ -314,13 +369,14 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            INSERT INTO public.alerta_encuesta (tipo_alerta_id, orden, nombre, descripcion, color)
+            INSERT INTO public.alerta_encuesta (tipo_alerta_id, tipo_flujo_id, orden, nombre, descripcion, color)
             VALUES
-                (6, 1, 'LLUVIA MUY FUERTE', 'Rapido anegamiento de calles.', '🔴'),
-                (6, 2, 'LLUVIA FUERTE', 'Poco anegamiento de calles que dificulta movilidad.', '🟡'),
-                (6, 3, 'LLUVIA MODERADA', 'Visibilidad reducida y acumulacion leve de agua.', '🟢'),
-                (4, 1, 'MUY FUERTE', 'Panico general, personas pierden estabilidad.', '🔴')
-            ON CONFLICT (tipo_alerta_id, orden) DO UPDATE
+                (6, 3, 1, 'LLUVIA MUY FUERTE', 'Rapido anegamiento de calles.', 'rojo'),
+                (6, 3, 2, 'LLUVIA FUERTE', 'Poco anegamiento de calles que dificulta movilidad.', 'amarillo'),
+                (6, 3, 3, 'LLUVIA MODERADA', 'Visibilidad reducida y acumulacion leve de agua.', 'verde'),
+                (6, 2, 4, 'LLUVIA DEBIL', 'Precipitacion ligera sin acumulacion relevante.', 'verde'),
+                (4, 3, 1, 'MUY FUERTE', 'Panico general, personas pierden estabilidad.', 'rojo')
+            ON CONFLICT (tipo_alerta_id, tipo_flujo_id, orden) DO UPDATE
             SET nombre = EXCLUDED.nombre,
                 descripcion = EXCLUDED.descripcion,
                 color = EXCLUDED.color,
@@ -399,6 +455,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/reportes/barridos/{barrido_id}" not in paths
     assert "/api/telegram/tipo-alertas" in paths
     assert "/api/telegram/tipo-alertas/{tipo_alerta_id}" in paths
+    assert "/api/telegram/tipo-flujos" in paths
     assert "/api/telegram/alerta-encuesta" in paths
     assert "/api/telegram/tipo-alertas/{tipo_alerta_id}/encuesta" in paths
     assert "/api/telegram/alerta-recomendaciones" in paths
@@ -435,7 +492,7 @@ def test_endpoint_tipo_alertas_lista_catalogo() -> None:
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
 
     try:
-        _asegurar_tipo_alertas(session)
+        _asegurar_catalogos_alertas(session)
 
         def override_get_db() -> Generator[Session, None, None]:
             yield session
@@ -483,7 +540,20 @@ def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
             "LLUVIA FUERTE",
             "LLUVIA MODERADA",
         ]
-        assert [item["color"] for item in encuesta_data] == ["🔴", "🟡", "🟢"]
+        assert [item["color"] for item in encuesta_data] == ["rojo", "amarillo", "verde"]
+        assert all(item["tipo_flujo_id"] == 3 for item in encuesta_data)
+
+        encuesta_barrido = client.get(
+            "/api/telegram/tipo-alertas/6/encuesta",
+            params={"tipo_flujo_codigo": "BARRIDO"},
+        )
+        assert encuesta_barrido.status_code == 200
+        assert [item["nombre"] for item in encuesta_barrido.json()] == [
+            "LLUVIA MUY FUERTE",
+            "LLUVIA FUERTE",
+            "LLUVIA MODERADA",
+            "LLUVIA DEBIL",
+        ]
 
         encuesta_filtrada = client.get("/api/telegram/alerta-encuesta", params={"tipo_alerta_id": 4})
         assert encuesta_filtrada.status_code == 200
@@ -720,6 +790,7 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta(monkeypatch) -> None:
         assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
         assert "LLUVIA MUY FUERTE" in sender.polls[-1]["poll"]["options"][0]["text"]
         assert "LLUVIA FUERTE" in sender.polls[-1]["poll"]["options"][1]["text"]
+        assert "LLUVIA DEBIL" in sender.polls[-1]["poll"]["options"][3]["text"]
 
         nivel = client.post(
             "/api/telegram/webhook",
@@ -843,7 +914,7 @@ def test_webhook_barrido_esperando_ubicacion_repite_instruccion_gps() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
-        _asegurar_tipo_alertas(session)
+        _asegurar_catalogos_alertas(session)
         session.execute(
             text(
                 """
@@ -1003,7 +1074,8 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
         assert seleccion.status_code == 200
         assert seleccion.json()["estado"] == "REPORTE_ALERTA_ENCUESTA_ENVIADA"
         assert sender.polls[-1]["poll"]["question"] == "Ingrese el NIVEL de alerta que usted visualiza:"
-        assert sender.polls[-1]["poll"]["options"][0]["text"].startswith("\U0001f534 LLUVIA MUY FUERTE")
+        assert sender.polls[-1]["poll"]["options"][0]["text"].startswith("rojo LLUVIA MUY FUERTE")
+        assert len(sender.polls[-1]["poll"]["options"]) == 3
 
         encuesta = client.post(
             "/api/telegram/webhook",
