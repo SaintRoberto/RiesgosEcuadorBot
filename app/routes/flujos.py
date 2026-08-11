@@ -1120,7 +1120,7 @@ def _ejecutar_script_barrido_alerta(
     mensaje = (
         SCRIPT_BARRIDO_LLUVIA_MENSAJE
         if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID
-        else f"Recordatorio de reporte de barrido: complete la encuesta de {tipo_alerta.descripcion.lower()}."
+        else f"Recordatorio de reporte de barrido: {tipo_alerta.descripcion.lower()}."
     )
     barrido = _crear_cabecera_barrido(
         db=db,
