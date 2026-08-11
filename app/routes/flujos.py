@@ -130,7 +130,7 @@ TIPO_FLUJO_ALERTA = "ALERTA"
 TIPO_FLUJO_BARRIDO = "BARRIDO"
 TIPO_FLUJO_AMBOS = "AMBOS"
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
-SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: Lluvias."
+SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: Lluvias"
 MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
 QUICKCHART_URL = "https://quickchart.io/chart"
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
@@ -819,6 +819,11 @@ def _teclado_riesgo_personas() -> dict[str, Any]:
 
 def _nombre_usuario(contacto: TelegramContacto) -> str:
     return (contacto.nombres or "").strip() or "usuario"
+
+
+def _mensaje_saludo_registro(contacto: TelegramContacto, nombre_update: str | None = None) -> str:
+    nombre = (contacto.nombres or nombre_update or "").strip() or "usuario"
+    return f"Hola {nombre}"
 
 
 def _mensaje_menu_principal(contacto: TelegramContacto, nombre_update: str | None = None) -> str:
@@ -3269,9 +3274,10 @@ def recibir_webhook_telegram(
             nombres=nombres,
             telefono=telefono,
         )
-        _responder_si_es_posible(sender, int(chat_id), mensaje)
         if contacto is not None and estado != "TELEFONO_YA_REGISTRADO":
-            _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
+            _responder_si_es_posible(sender, int(chat_id), _mensaje_saludo_registro(contacto, nombres))
+        else:
+            _responder_si_es_posible(sender, int(chat_id), mensaje)
         return TelegramWebhookRespuesta(
             estado=estado,
             mensaje=mensaje,

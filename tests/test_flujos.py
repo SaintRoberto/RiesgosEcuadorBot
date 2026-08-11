@@ -681,9 +681,10 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         def override_get_db() -> Generator[Session, None, None]:
             yield session
 
+        sender = FakeTelegramSender()
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_telegram_sender] = lambda: FakeTelegramSender()
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: FakeTelegramSender()
+        app.dependency_overrides[get_telegram_sender] = lambda: sender
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
         client = TestClient(app)
 
         start = client.post(
@@ -731,6 +732,9 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         assert registro.json()["estado"] == "REGISTRADO"
         assert registro.json()["telefono"] == telefono
         assert registro.json()["chat_id"] == chat_id
+        assert sender.messages[-1]["text"] == "Hola Nombre Precargado"
+        assert "reply_markup" not in sender.messages[-1]
+        assert all("CAÍDA DE CENIZA" not in str(message.get("reply_markup")) for message in sender.messages)
 
         row = session.execute(
             text(
