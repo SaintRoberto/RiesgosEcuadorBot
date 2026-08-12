@@ -699,23 +699,9 @@ def test_webhook_registra_contacto_con_telefono() -> None:
             },
         )
         assert start.status_code == 200
-        assert start.json()["estado"] == "ACCESO_NO_AUTORIZADO"
+        assert start.json()["estado"] == "ESPERANDO_CONTACTO"
+        assert sender.messages[-1]["reply_markup"]["keyboard"][0][0]["request_contact"] is True
 
-        registrar = client.post(
-            "/api/telegram/webhook",
-            json={
-                "update_id": 2,
-                "message": {
-                    "from": {"id": chat_id, "first_name": "David"},
-                    "chat": {"id": chat_id, "first_name": "David", "type": "private"},
-                    "text": "/registrar",
-                },
-            },
-        )
-        assert registrar.status_code == 200
-        assert registrar.json()["estado"] == "ESPERANDO_TELEFONO"
-
-        mensaje = f"mi numero {telefono}"
         registro = client.post(
             "/api/telegram/webhook",
             json={
@@ -723,8 +709,11 @@ def test_webhook_registra_contacto_con_telefono() -> None:
                 "message": {
                     "from": {"id": chat_id, "first_name": "David"},
                     "chat": {"id": chat_id, "first_name": "David", "type": "private"},
-                    "text": mensaje,
-                    "entities": [{"offset": 10, "length": len(telefono), "type": "phone_number"}],
+                    "contact": {
+                        "phone_number": telefono,
+                        "first_name": "David",
+                        "user_id": chat_id,
+                    },
                 },
             },
         )
@@ -733,8 +722,8 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         assert registro.json()["telefono"] == telefono
         assert registro.json()["chat_id"] == chat_id
         assert sender.messages[-1]["text"] == "Hola Nombre Precargado"
-        assert "reply_markup" not in sender.messages[-1]
-        assert all("CAÍDA DE CENIZA" not in str(message.get("reply_markup")) for message in sender.messages)
+        assert sender.messages[-1]["reply_markup"] == {"remove_keyboard": True}
+        assert all("CAIDA DE CENIZA" not in str(message.get("reply_markup")) for message in sender.messages)
 
         row = session.execute(
             text(
@@ -752,6 +741,50 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         assert row["activo"] is True
     finally:
         flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_contacto_compartido_no_autorizado() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_tipo_alertas(session)
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        sender = FakeTelegramSender()
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 4,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "David"},
+                    "chat": {"id": chat_id, "first_name": "David", "type": "private"},
+                    "contact": {
+                        "phone_number": "+593999999999",
+                        "first_name": "David",
+                        "user_id": chat_id,
+                    },
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "ACCESO_NO_AUTORIZADO"
+        assert sender.messages[-1]["text"] == flujos.MENSAJE_ACCESO_NO_AUTORIZADO
+        assert sender.messages[-1]["reply_markup"] == {"remove_keyboard": True}
+    finally:
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()
@@ -1272,12 +1305,12 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
             text(
                 """
                 INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
+                    (telegram_user_id, chat_id, telefono, nombres, activo)
                 VALUES
-                    (:telegram_user_id_admin, :chat_id_admin, :telefono_admin, true),
-                    (:telegram_user_id_1, :chat_id_1, :telefono_1, true),
-                    (:telegram_user_id_2, :chat_id_2, :telefono_2, true),
-                    (0, 0, :telefono_sin_telegram, true)
+                    (:telegram_user_id_admin, :chat_id_admin, :telefono_admin, 'Admin GAD', true),
+                    (:telegram_user_id_1, :chat_id_1, :telefono_1, 'Usuario Uno', true),
+                    (:telegram_user_id_2, :chat_id_2, :telefono_2, 'Usuario Dos', true),
+                    (0, 0, :telefono_sin_telegram, 'Sin Telegram', true)
                 """
             ),
             {
@@ -1340,6 +1373,18 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         assert ejecucion.status_code == 200
         assert ejecucion.json()["estado"] == "SCRIPT_BARRIDO_EJECUTADO"
         assert "Barrido id:" in ejecucion.json()["mensaje"]
+        barrido_id = int(str(ejecucion.json()["mensaje"]).split("Barrido id: ")[1].split(".")[0])
+        fecha_hoy = flujos.date.today().strftime("%d-%m-%Y")
+        mensajes_barrido = [
+            mensaje["text"]
+            for mensaje in sender.messages
+            if str(mensaje["text"]).startswith("Hola ") and "ha ejecutado el barrido" in str(mensaje["text"])
+        ]
+        assert len(mensajes_barrido) == 3
+        assert (
+            f"Hola Usuario Uno la SNGR ha ejecutado el barrido por LLUVIAS No. {barrido_id} "
+            f"para el {fecha_hoy}, ayudame registrando como percibes LLUVIAS en tu ubicacion actual:"
+        ) in mensajes_barrido
 
         total = session.execute(
             text(

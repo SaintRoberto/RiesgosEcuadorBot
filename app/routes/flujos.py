@@ -130,7 +130,7 @@ TIPO_FLUJO_ALERTA = "ALERTA"
 TIPO_FLUJO_BARRIDO = "BARRIDO"
 TIPO_FLUJO_AMBOS = "AMBOS"
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
-SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Recordatorio de reporte de barrido: Lluvias"
+SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Barrido de lluvias"
 MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
 QUICKCHART_URL = "https://quickchart.io/chart"
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
@@ -568,6 +568,16 @@ def _extraer_telefono_de_mensaje(message: dict[str, Any], texto: str) -> str | N
     return None
 
 
+def _extraer_telefono_de_contacto(message: dict[str, Any]) -> str | None:
+    contacto = message.get("contact")
+    if not isinstance(contacto, dict):
+        return None
+    telefono = contacto.get("phone_number")
+    if not isinstance(telefono, str):
+        return None
+    return _normalizar_telefono(telefono)
+
+
 def _nombre_desde_update(origen: dict[str, Any], chat: dict[str, Any]) -> str | None:
     partes = [
         origen.get("first_name") or chat.get("first_name"),
@@ -826,6 +836,24 @@ def _mensaje_saludo_registro(contacto: TelegramContacto, nombre_update: str | No
     return f"Hola {nombre}"
 
 
+def _formatear_fecha_barrido_mensaje(fecha_barrido: date | None) -> str:
+    return (fecha_barrido or date.today()).strftime("%d-%m-%Y")
+
+
+def _mensaje_inicio_barrido(
+    contacto: TelegramContacto,
+    tipo_alerta: TipoAlerta,
+    barrido: TelegramBarrido,
+    fecha_barrido: date | None,
+) -> str:
+    alerta = tipo_alerta.descripcion
+    return (
+        f"Hola {_nombre_usuario(contacto)} la SNGR ha ejecutado el barrido por {alerta} "
+        f"No. {barrido.id} para el {_formatear_fecha_barrido_mensaje(fecha_barrido)}, "
+        f"ayudame registrando como percibes {alerta} en tu ubicacion actual:"
+    )
+
+
 def _mensaje_menu_principal(contacto: TelegramContacto, nombre_update: str | None = None) -> str:
     nombre = (contacto.nombres or nombre_update or "").strip() or "usuario"
     return f"Hola {nombre}. {MENSAJE_MENU_PRINCIPAL}"
@@ -880,6 +908,21 @@ def _teclado_solicitar_ubicacion() -> dict[str, Any]:
     }
 
 
+def _teclado_solicitar_contacto() -> dict[str, Any]:
+    return {
+        "keyboard": [
+            [
+                {
+                    "text": "Compartir contacto",
+                    "request_contact": True,
+                }
+            ]
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+    }
+
+
 def _quitar_teclado_personalizado() -> dict[str, Any]:
     return {"remove_keyboard": True}
 
@@ -907,7 +950,8 @@ def _iniciar_registro_telefono(chat_id: int, sender: TelegramSender | None) -> N
     _responder_si_es_posible(
         sender,
         chat_id,
-        "Por favor envie su numero de telefono institucional. Ejemplo: +593987223658",
+        "Para activar su acceso, comparta su contacto usando el boton de Telegram.",
+        reply_markup=_teclado_solicitar_contacto(),
     )
 
 
@@ -977,7 +1021,7 @@ def _normalizar_texto_catalogo(texto: str) -> str:
 
 def _es_inicio_o_menu(texto: str) -> bool:
     normalizado = _texto_normalizado(texto)
-    return normalizado.startswith("/start") or normalizado in {"hola", "menu", "inicio"}
+    return normalizado.startswith("/start") or normalizado in {"hola", "menu", "inicio", "iniciar"}
 
 
 def _es_comando_registro(texto: str) -> bool:
@@ -1092,8 +1136,11 @@ def _iniciar_reporte_barrido(
         registro.estado = "PROCESANDO"
     db.commit()
     db.refresh(registro)
-    if mensaje:
-        _responder_si_es_posible(sender, contacto.chat_id, mensaje)
+    _responder_si_es_posible(
+        sender,
+        contacto.chat_id,
+        _mensaje_inicio_barrido(contacto, tipo_alerta, barrido, fecha_barrido),
+    )
     _enviar_encuesta_barrido_si_es_posible(db, sender, contacto.chat_id, registro)
 
 
@@ -1122,11 +1169,7 @@ def _ejecutar_script_barrido_alerta(
     )
     fecha_barrido = date.today()
     codigo = SCRIPT_BARRIDO_LLUVIA_CODIGO if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID else f"BARRIDO-{tipo_alerta.id}"
-    mensaje = (
-        SCRIPT_BARRIDO_LLUVIA_MENSAJE
-        if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID
-        else f"Recordatorio de reporte de barrido: {tipo_alerta.descripcion.lower()}."
-    )
+    mensaje = SCRIPT_BARRIDO_LLUVIA_MENSAJE if tipo_alerta.id == TIPO_ALERTA_LLUVIAS_ID else f"Barrido de {tipo_alerta.descripcion.lower()}"
     barrido = _crear_cabecera_barrido(
         db=db,
         tipo_alerta_id=tipo_alerta.id,
@@ -2538,10 +2581,10 @@ def recibir_webhook_telegram(
     if _es_inicio_o_menu(texto):
         contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
         if contacto is None:
-            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
+            _iniciar_registro_telefono(int(chat_id), sender)
             return TelegramWebhookRespuesta(
-                estado="ACCESO_NO_AUTORIZADO",
-                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
+                estado="ESPERANDO_CONTACTO",
+                mensaje="Se solicito compartir el contacto de Telegram.",
                 chat_id=int(chat_id),
             )
         _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
@@ -3253,17 +3296,43 @@ def recibir_webhook_telegram(
             chat_id=contacto.chat_id,
         )
 
+    telefono_contacto = _extraer_telefono_de_contacto(message)
+    if telefono_contacto:
+        estado, mensaje, contacto = _registrar_telefono_autorizado(
+            db=db,
+            telegram_user_id=int(telegram_user_id),
+            chat_id=int(chat_id),
+            nombres=nombres,
+            telefono=telefono_contacto,
+        )
+        if contacto is not None and estado != "TELEFONO_YA_REGISTRADO":
+            _responder_si_es_posible(
+                sender,
+                int(chat_id),
+                _mensaje_saludo_registro(contacto, nombres),
+                reply_markup=_quitar_teclado_personalizado(),
+            )
+        else:
+            _responder_si_es_posible(sender, int(chat_id), mensaje, reply_markup=_quitar_teclado_personalizado())
+        return TelegramWebhookRespuesta(
+            estado=estado,
+            mensaje=mensaje,
+            contacto_id=contacto.id if contacto else None,
+            telefono=contacto.telefono if contacto else telefono_contacto,
+            chat_id=contacto.chat_id if contacto else int(chat_id),
+        )
+
     telefono = _extraer_telefono_de_mensaje(message, texto)
     if telefono:
         if not _registro_telefono_pendiente(int(chat_id)):
             _responder_si_es_posible(
                 sender,
                 int(chat_id),
-                "Para registrar su numero, primero escriba /registrar.",
+                "Para activar su acceso, primero escriba /start o iniciar y use el boton Compartir contacto.",
             )
             return TelegramWebhookRespuesta(
                 estado="REGISTRO_REQUERIDO",
-                mensaje="Se recibio telefono, pero no hay registro de telefono pendiente.",
+                mensaje="Se recibio telefono, pero no hay registro de contacto pendiente.",
                 chat_id=int(chat_id),
             )
 
