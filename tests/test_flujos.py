@@ -1400,17 +1400,17 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
                 "message": {
                     "from": {"id": chat_id_admin, "first_name": "Admin"},
                     "chat": {"id": chat_id_admin, "first_name": "Admin", "type": "private"},
-                    "text": "/scripts",
+                    "text": "/barridos",
                 },
             },
         )
         assert menu.status_code == 200
         assert menu.json()["estado"] == "MENU_SCRIPTS"
         assert sender.messages[-1]["reply_markup"]["inline_keyboard"][0][0]["text"] == (
-            "Ejecutar script de barrido de ca\u00edda de ceniza"
+            "Barrido de ca\u00edda de ceniza"
         )
         assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["text"] == (
-            "Ejecutar script de barrido de lluvias"
+            "Barrido de lluvias"
         )
         assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["callback_data"] == "SCRIPT_ALERTA:6"
 

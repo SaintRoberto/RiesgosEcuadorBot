@@ -123,7 +123,7 @@ CALLBACK_ALERTA_RIESGO_SI = "ALERTA_RIESGO:SI"
 CALLBACK_ALERTA_RIESGO_NO = "ALERTA_RIESGO:NO"
 CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
 CALLBACK_REPORTE_EVENTO = "REPORTE_EVENTO"
-MENSAJE_MENU_SCRIPTS = "Seleccione el script que desea ejecutar:"
+MENSAJE_MENU_SCRIPTS = "Seleccione el Barrido que desea lanzar:"
 CALLBACK_SCRIPT_ALERTA_PREFIX = "SCRIPT_ALERTA:"
 TIPO_ALERTA_LLUVIAS_ID = 6
 TIPO_FLUJO_ALERTA = "ALERTA"
@@ -821,7 +821,7 @@ def _teclado_menu_scripts(db: Session) -> dict[str, Any]:
         "inline_keyboard": [
             [
                 {
-                    "text": f"Ejecutar script de barrido de {tipo_alerta.descripcion.lower()}",
+                    "text": f"Barrido de {tipo_alerta.descripcion.lower()}",
                     "callback_data": f"{CALLBACK_SCRIPT_ALERTA_PREFIX}{tipo_alerta.id}",
                 }
             ]
@@ -1048,7 +1048,7 @@ def _es_comando_registro(texto: str) -> bool:
 
 def _es_comando_scripts(texto: str) -> bool:
     normalizado = _texto_normalizado(texto)
-    return normalizado.startswith("/scripts") or normalizado == "scripts"
+    return normalizado.startswith("/barridos") or normalizado == "barridos"
 
 
 def _es_comando_reportes(texto: str) -> bool:
