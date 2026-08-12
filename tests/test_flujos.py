@@ -791,6 +791,64 @@ def test_webhook_contacto_compartido_no_autorizado() -> None:
         connection.close()
 
 
+def test_webhook_contacto_compartido_valida_telefono_con_espacios_y_formato_local() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    sufijo = f"{uuid4().int % 100000000:08d}"
+    telefono_local = f"09{sufijo}"
+    telefono_telegram = f"+593 9{sufijo[0:1]} {sufijo[1:4]} {sufijo[4:]}"
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_tipo_alertas(session)
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_contactos
+                    (telegram_user_id, chat_id, telefono, nombres, activo)
+                VALUES
+                    (0, 0, :telefono, 'David', true)
+                """
+            ),
+            {"telefono": telefono_local},
+        )
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        sender = FakeTelegramSender()
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 5,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "David"},
+                    "chat": {"id": chat_id, "first_name": "David", "type": "private"},
+                    "contact": {
+                        "phone_number": telefono_telegram,
+                        "first_name": "David",
+                        "user_id": chat_id,
+                    },
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "REGISTRADO"
+        assert respuesta.json()["telefono"] == telefono_local
+        assert sender.messages[-1]["text"] == "Hola David"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
 def test_webhook_guarda_barrido_con_ubicacion_y_encuesta(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()

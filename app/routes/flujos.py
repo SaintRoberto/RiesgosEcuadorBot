@@ -551,6 +551,18 @@ def _normalizar_telefono(texto: str) -> str | None:
     return telefono
 
 
+def _variantes_telefono_ecuador(telefono: str) -> list[str]:
+    variantes = [telefono]
+    solo_digitos = telefono[1:] if telefono.startswith("+") else telefono
+    if solo_digitos.startswith("593") and len(solo_digitos) > 3:
+        variantes.append(f"+{solo_digitos}")
+        variantes.append(f"0{solo_digitos[3:]}")
+    elif solo_digitos.startswith("0") and len(solo_digitos) > 1:
+        variantes.append(f"+593{solo_digitos[1:]}")
+        variantes.append(f"593{solo_digitos[1:]}")
+    return list(dict.fromkeys(variantes))
+
+
 def _extraer_telefono_de_mensaje(message: dict[str, Any], texto: str) -> str | None:
     for entity in message.get("entities") or []:
         if entity.get("type") != "phone_number":
@@ -974,9 +986,10 @@ def _registrar_telefono_autorizado(
     telefono: str,
 ) -> tuple[str, str, TelegramContacto | None]:
     REGISTROS_TELEFONO_PENDIENTES.pop(chat_id, None)
+    variantes_telefono = _variantes_telefono_ecuador(telefono)
     contacto = db.scalars(
         select(TelegramContacto).where(
-            TelegramContacto.telefono == telefono,
+            TelegramContacto.telefono.in_(variantes_telefono),
             TelegramContacto.activo.is_(True),
         )
     ).first()
