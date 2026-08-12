@@ -580,16 +580,6 @@ def _extraer_telefono_de_mensaje(message: dict[str, Any], texto: str) -> str | N
     return None
 
 
-def _extraer_telefono_de_contacto(message: dict[str, Any]) -> str | None:
-    contacto = message.get("contact")
-    if not isinstance(contacto, dict):
-        return None
-    telefono = contacto.get("phone_number")
-    if not isinstance(telefono, str):
-        return None
-    return _normalizar_telefono(telefono)
-
-
 def _nombre_desde_update(origen: dict[str, Any], chat: dict[str, Any]) -> str | None:
     partes = [
         origen.get("first_name") or chat.get("first_name"),
@@ -920,21 +910,6 @@ def _teclado_solicitar_ubicacion() -> dict[str, Any]:
     }
 
 
-def _teclado_solicitar_contacto() -> dict[str, Any]:
-    return {
-        "keyboard": [
-            [
-                {
-                    "text": "Compartir contacto",
-                    "request_contact": True,
-                }
-            ]
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": True,
-    }
-
-
 def _quitar_teclado_personalizado() -> dict[str, Any]:
     return {"remove_keyboard": True}
 
@@ -962,8 +937,7 @@ def _iniciar_registro_telefono(chat_id: int, sender: TelegramSender | None) -> N
     _responder_si_es_posible(
         sender,
         chat_id,
-        "Para activar su acceso, comparta su contacto usando el boton de Telegram.",
-        reply_markup=_teclado_solicitar_contacto(),
+        "Por favor envie su numero de telefono institucional. Ejemplo: +593987223658",
     )
 
 
@@ -1035,6 +1009,11 @@ def _normalizar_texto_catalogo(texto: str) -> str:
 def _es_inicio_o_menu(texto: str) -> bool:
     normalizado = _texto_normalizado(texto)
     return normalizado.startswith("/start") or normalizado in {"hola", "menu", "inicio", "iniciar"}
+
+
+def _es_inicio_registro(texto: str) -> bool:
+    normalizado = _texto_normalizado(texto)
+    return normalizado.startswith("/start") or normalizado == "iniciar"
 
 
 def _es_comando_registro(texto: str) -> bool:
@@ -2594,10 +2573,17 @@ def recibir_webhook_telegram(
     if _es_inicio_o_menu(texto):
         contacto = _contacto_autorizado_por_identidad(db, int(chat_id), int(telegram_user_id))
         if contacto is None:
-            _iniciar_registro_telefono(int(chat_id), sender)
+            if _es_inicio_registro(texto):
+                _iniciar_registro_telefono(int(chat_id), sender)
+                return TelegramWebhookRespuesta(
+                    estado="ESPERANDO_TELEFONO",
+                    mensaje="Se solicito el telefono institucional.",
+                    chat_id=int(chat_id),
+                )
+            _responder_acceso_no_autorizado_si_es_posible(sender, int(chat_id))
             return TelegramWebhookRespuesta(
-                estado="ESPERANDO_CONTACTO",
-                mensaje="Se solicito compartir el contacto de Telegram.",
+                estado="ACCESO_NO_AUTORIZADO",
+                mensaje=MENSAJE_ACCESO_NO_AUTORIZADO,
                 chat_id=int(chat_id),
             )
         _mostrar_menu_principal_si_es_posible(db, sender, contacto, nombres)
@@ -3309,43 +3295,17 @@ def recibir_webhook_telegram(
             chat_id=contacto.chat_id,
         )
 
-    telefono_contacto = _extraer_telefono_de_contacto(message)
-    if telefono_contacto:
-        estado, mensaje, contacto = _registrar_telefono_autorizado(
-            db=db,
-            telegram_user_id=int(telegram_user_id),
-            chat_id=int(chat_id),
-            nombres=nombres,
-            telefono=telefono_contacto,
-        )
-        if contacto is not None and estado != "TELEFONO_YA_REGISTRADO":
-            _responder_si_es_posible(
-                sender,
-                int(chat_id),
-                _mensaje_saludo_registro(contacto, nombres),
-                reply_markup=_quitar_teclado_personalizado(),
-            )
-        else:
-            _responder_si_es_posible(sender, int(chat_id), mensaje, reply_markup=_quitar_teclado_personalizado())
-        return TelegramWebhookRespuesta(
-            estado=estado,
-            mensaje=mensaje,
-            contacto_id=contacto.id if contacto else None,
-            telefono=contacto.telefono if contacto else telefono_contacto,
-            chat_id=contacto.chat_id if contacto else int(chat_id),
-        )
-
     telefono = _extraer_telefono_de_mensaje(message, texto)
     if telefono:
         if not _registro_telefono_pendiente(int(chat_id)):
             _responder_si_es_posible(
                 sender,
                 int(chat_id),
-                "Para activar su acceso, primero escriba /start o iniciar y use el boton Compartir contacto.",
+                "Para registrar su numero, primero escriba /registrar.",
             )
             return TelegramWebhookRespuesta(
                 estado="REGISTRO_REQUERIDO",
-                mensaje="Se recibio telefono, pero no hay registro de contacto pendiente.",
+                mensaje="Se recibio telefono, pero no hay registro de telefono pendiente.",
                 chat_id=int(chat_id),
             )
 

@@ -699,8 +699,8 @@ def test_webhook_registra_contacto_con_telefono() -> None:
             },
         )
         assert start.status_code == 200
-        assert start.json()["estado"] == "ESPERANDO_CONTACTO"
-        assert sender.messages[-1]["reply_markup"]["keyboard"][0][0]["request_contact"] is True
+        assert start.json()["estado"] == "ESPERANDO_TELEFONO"
+        assert "reply_markup" not in sender.messages[-1]
 
         registro = client.post(
             "/api/telegram/webhook",
@@ -709,11 +709,14 @@ def test_webhook_registra_contacto_con_telefono() -> None:
                 "message": {
                     "from": {"id": chat_id, "first_name": "David"},
                     "chat": {"id": chat_id, "first_name": "David", "type": "private"},
-                    "contact": {
-                        "phone_number": telefono,
-                        "first_name": "David",
-                        "user_id": chat_id,
-                    },
+                    "text": f"mi numero es {telefono}",
+                    "entities": [
+                        {
+                            "type": "phone_number",
+                            "offset": len("mi numero es "),
+                            "length": len(telefono),
+                        }
+                    ],
                 },
             },
         )
@@ -722,7 +725,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         assert registro.json()["telefono"] == telefono
         assert registro.json()["chat_id"] == chat_id
         assert sender.messages[-1]["text"] == "Hola Nombre Precargado"
-        assert sender.messages[-1]["reply_markup"] == {"remove_keyboard": True}
+        assert "reply_markup" not in sender.messages[-1]
         assert all("CAIDA DE CENIZA" not in str(message.get("reply_markup")) for message in sender.messages)
 
         row = session.execute(
@@ -747,51 +750,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
         connection.close()
 
 
-def test_webhook_contacto_compartido_no_autorizado() -> None:
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
-    chat_id = -(uuid4().int % 1000000000)
-
-    try:
-        _asegurar_tipo_alertas(session)
-
-        def override_get_db() -> Generator[Session, None, None]:
-            yield session
-
-        sender = FakeTelegramSender()
-        app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
-        client = TestClient(app)
-
-        respuesta = client.post(
-            "/api/telegram/webhook",
-            json={
-                "update_id": 4,
-                "message": {
-                    "from": {"id": chat_id, "first_name": "David"},
-                    "chat": {"id": chat_id, "first_name": "David", "type": "private"},
-                    "contact": {
-                        "phone_number": "+593999999999",
-                        "first_name": "David",
-                        "user_id": chat_id,
-                    },
-                },
-            },
-        )
-
-        assert respuesta.status_code == 200
-        assert respuesta.json()["estado"] == "ACCESO_NO_AUTORIZADO"
-        assert sender.messages[-1]["text"] == flujos.MENSAJE_ACCESO_NO_AUTORIZADO
-        assert sender.messages[-1]["reply_markup"] == {"remove_keyboard": True}
-    finally:
-        app.dependency_overrides.clear()
-        session.close()
-        transaction.rollback()
-        connection.close()
-
-
-def test_webhook_contacto_compartido_valida_telefono_con_espacios_y_formato_local() -> None:
+def test_webhook_registra_telefono_con_espacios_y_formato_local() -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -802,6 +761,7 @@ def test_webhook_contacto_compartido_valida_telefono_con_espacios_y_formato_loca
 
     try:
         _asegurar_tipo_alertas(session)
+        flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
         session.execute(
             text(
                 """
@@ -819,8 +779,23 @@ def test_webhook_contacto_compartido_valida_telefono_con_espacios_y_formato_loca
 
         sender = FakeTelegramSender()
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_telegram_sender] = lambda: sender
         app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
         client = TestClient(app)
+
+        solicitud_registro = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 4,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "David"},
+                    "chat": {"id": chat_id, "first_name": "David", "type": "private"},
+                    "text": "/registrar",
+                },
+            },
+        )
+        assert solicitud_registro.status_code == 200
+        assert solicitud_registro.json()["estado"] == "ESPERANDO_TELEFONO"
 
         respuesta = client.post(
             "/api/telegram/webhook",
@@ -829,11 +804,14 @@ def test_webhook_contacto_compartido_valida_telefono_con_espacios_y_formato_loca
                 "message": {
                     "from": {"id": chat_id, "first_name": "David"},
                     "chat": {"id": chat_id, "first_name": "David", "type": "private"},
-                    "contact": {
-                        "phone_number": telefono_telegram,
-                        "first_name": "David",
-                        "user_id": chat_id,
-                    },
+                    "text": f"mi numero es {telefono_telegram}",
+                    "entities": [
+                        {
+                            "type": "phone_number",
+                            "offset": len("mi numero es "),
+                            "length": len(telefono_telegram),
+                        }
+                    ],
                 },
             },
         )
@@ -843,6 +821,49 @@ def test_webhook_contacto_compartido_valida_telefono_con_espacios_y_formato_loca
         assert respuesta.json()["telefono"] == telefono_local
         assert sender.messages[-1]["text"] == "Hola David"
     finally:
+        flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
+        app.dependency_overrides.clear()
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_webhook_hola_no_activa_registro_de_telefono() -> None:
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    chat_id = -(uuid4().int % 1000000000)
+
+    try:
+        _asegurar_tipo_alertas(session)
+        flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
+
+        def override_get_db() -> Generator[Session, None, None]:
+            yield session
+
+        sender = FakeTelegramSender()
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_optional_telegram_sender] = lambda: sender
+        client = TestClient(app)
+
+        respuesta = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 6,
+                "message": {
+                    "from": {"id": chat_id, "first_name": "David"},
+                    "chat": {"id": chat_id, "first_name": "David", "type": "private"},
+                    "text": "hola",
+                },
+            },
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["estado"] == "ACCESO_NO_AUTORIZADO"
+        assert sender.messages[-1]["text"] == flujos.MENSAJE_ACCESO_NO_AUTORIZADO
+        assert chat_id not in flujos.REGISTROS_TELEFONO_PENDIENTES
+    finally:
+        flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
         app.dependency_overrides.clear()
         session.close()
         transaction.rollback()
