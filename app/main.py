@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException, status
+from fastapi.openapi.docs import get_swagger_ui_html, get_swagger_ui_oauth2_redirect_html
+from starlette.responses import HTMLResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -12,8 +14,24 @@ app = FastAPI(
     title=settings.app_name,
     debug=settings.app_debug,
     version="1.0.0",
+    root_path=settings.app_root_path,
+    docs_url=None,
 )
 app.include_router(flujos_router)
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_ui_html() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url="./openapi.json",
+        title=f"{settings.app_name} - Swagger UI",
+        oauth2_redirect_url="./docs/oauth2-redirect",
+    )
+
+
+@app.get("/docs/oauth2-redirect", include_in_schema=False)
+def swagger_ui_redirect() -> HTMLResponse:
+    return get_swagger_ui_oauth2_redirect_html()
 
 
 @app.get("/health", response_model=HealthRespuesta, tags=["sistema"])

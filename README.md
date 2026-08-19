@@ -52,6 +52,13 @@ El archivo detecta automáticamente `.venv`, por lo que no es necesario activar 
 - Documentación Swagger: `http://127.0.0.1:8000/docs`
 - Estado del servicio: `GET http://127.0.0.1:8000/health`
 
+Si la API se publica detrás de un prefijo de proxy, configura `APP_ROOT_PATH`.
+Por ejemplo, para servirla en `/riesgos-bot`:
+
+```text
+APP_ROOT_PATH=/riesgos-bot
+```
+
 ## Endpoints de flujos Telegram
 
 - `POST /api/telegram/webhook`: recibe mensajes entrantes de Telegram y registra contactos.
