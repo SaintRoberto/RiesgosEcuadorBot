@@ -144,6 +144,11 @@ MEDIA_TYPE_POR_EXTENSION = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
+EXTENSION_POR_MEDIA_TYPE = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 REGISTROS_TELEFONO_PENDIENTES: dict[int, datetime] = {}
 REGISTRO_TELEFONO_TTL_SEGUNDOS = 600
 
@@ -154,12 +159,37 @@ def _codigo(prefix: str, valor: str | None, fecha: date | None = None) -> str:
     return f"{prefix}-{(fecha or date.today()).isoformat()}"
 
 
-def _media_type_desde_file_path(file_path: str) -> str:
+def _media_type_desde_file_path(file_path: str) -> str | None:
     path = file_path.lower()
     for extension, media_type in MEDIA_TYPE_POR_EXTENSION.items():
         if path.endswith(extension):
             return media_type
-    return "application/octet-stream"
+    return None
+
+
+def _media_type_desde_contenido(content: bytes) -> str | None:
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _media_type_imagen(file_path: str, content: bytes) -> str:
+    return (
+        _media_type_desde_contenido(content)
+        or _media_type_desde_file_path(file_path)
+        or "application/octet-stream"
+    )
+
+
+def _nombre_archivo_foto_evento(evento_id: int, media_type: str) -> str:
+    extension = EXTENSION_POR_MEDIA_TYPE.get(media_type)
+    if extension is None:
+        return f"evento-{evento_id}"
+    return f"evento-{evento_id}.{extension}"
 
 
 def _formatear_fecha_reporte(fecha_reporte: datetime) -> str:
@@ -3766,10 +3796,15 @@ def obtener_foto_evento(
             detail="No se pudo obtener la foto desde Telegram.",
         ) from exc
 
+    media_type = _media_type_imagen(str(file_path), content)
+    filename = _nombre_archivo_foto_evento(evento_id, media_type)
     return Response(
         content=content,
-        media_type=_media_type_desde_file_path(str(file_path)),
-        headers={"Cache-Control": "private, max-age=300"},
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
     )
 
 
