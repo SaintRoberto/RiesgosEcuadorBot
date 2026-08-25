@@ -2006,8 +2006,8 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
         assert menu.json()["estado"] == "MENU_REPORTES"
         assert sender.messages[-1]["text"] == "Que reportes desea visualizar"
         assert sender.messages[-1]["reply_markup"]["inline_keyboard"] == [
-            [{"text": "Reporte Alertas", "callback_data": "MENU_REPORTE_ALERTAS"}],
-            [{"text": "Reportes barridos", "callback_data": "MENU_REPORTE_BARRIDOS"}],
+            [{"text": "REPORTES ALERTAS", "callback_data": "MENU_REPORTE_ALERTAS"}],
+            [{"text": "REPORTES BARRIDOS", "callback_data": "MENU_REPORTE_BARRIDOS"}],
         ]
 
         menu_alertas = client.post(

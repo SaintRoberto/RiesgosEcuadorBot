@@ -732,8 +732,8 @@ def _teclado_menu_principal(db: Session) -> dict[str, Any]:
 def _teclado_menu_reportes(db: Session) -> dict[str, Any]:
     return {
         "inline_keyboard": [
-            [{"text": "Reporte Alertas", "callback_data": CALLBACK_MENU_REPORTE_ALERTAS}],
-            [{"text": "Reportes barridos", "callback_data": CALLBACK_MENU_REPORTE_BARRIDOS}],
+            [{"text": "REPORTES ALERTAS", "callback_data": CALLBACK_MENU_REPORTE_ALERTAS}],
+            [{"text": "REPORTES BARRIDOS", "callback_data": CALLBACK_MENU_REPORTE_BARRIDOS}],
         ],
     }
 
