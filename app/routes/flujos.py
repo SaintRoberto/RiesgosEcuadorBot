@@ -4,9 +4,7 @@ import unicodedata
 from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any
-from urllib import error as urlerror
 from urllib.parse import urlencode
-from urllib import request as urlrequest
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import and_, func, or_, select
@@ -46,6 +44,10 @@ from app.schemas import (
     TipoFlujoRespuesta,
 )
 from app.telegram import TelegramDeliveryError, TelegramSender, get_optional_telegram_sender, get_telegram_sender
+from app.ubicacion import (
+    extraer_ubicacion_administrativa_desde_address as _extraer_ubicacion_administrativa_desde_address,
+    resolver_ubicacion_administrativa as _resolver_ubicacion_administrativa,
+)
 
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 
@@ -139,10 +141,6 @@ MENSAJE_MENU_TIPO_REPORTES = "Que reportes desea visualizar"
 MENSAJE_MENU_REPORTES_ALERTAS = "Seleccione el tipo de alerta del reporte de alertas que desea visualizar:"
 MENSAJE_MENU_REPORTES_BARRIDOS = "Seleccione el tipo de alerta del reporte de barridos que desea visualizar:"
 QUICKCHART_URL = "https://quickchart.io/chart"
-NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
-NOMINATIM_USER_AGENT = "RiesgosEcuadorBot/1.0"
-NOMINATIM_TIMEOUT_SECONDS = 5
-PAIS_ECUADOR_CODIGO = "ec"
 PREGUNTA_NIVEL_ALERTA = "Ingrese el NIVEL de alerta que usted visualiza:"
 MEDIA_TYPE_POR_EXTENSION = {
     ".jpg": "image/jpeg",
@@ -200,113 +198,6 @@ def _nombre_archivo_foto_evento(evento_id: int, media_type: str) -> str:
 
 def _formatear_fecha_reporte(fecha_reporte: datetime) -> str:
     return fecha_reporte.strftime("%d/%m/%Y %H:%M")
-
-
-def _ubicacion_admin_vacia() -> dict[str, str | None]:
-    return {"provincia": None, "canton": None, "parroquia": None}
-
-
-def _texto_address(address: dict[str, Any], campos: list[str]) -> str | None:
-    for campo in campos:
-        valor = address.get(campo)
-        if isinstance(valor, str) and valor.strip():
-            return valor.strip()
-    return None
-
-
-def _normalizar_texto_ubicacion(valor: str | None) -> str:
-    if not valor:
-        return ""
-    texto = unicodedata.normalize("NFKD", valor)
-    texto = "".join(caracter for caracter in texto if not unicodedata.combining(caracter))
-    return re.sub(r"\s+", " ", texto).strip().casefold()
-
-
-def _texto_address_distinto_de(
-    address: dict[str, Any],
-    campos: list[str],
-    valores_excluidos: list[str | None],
-) -> str | None:
-    excluidos = {_normalizar_texto_ubicacion(valor) for valor in valores_excluidos if valor}
-    for campo in campos:
-        valor = address.get(campo)
-        if not isinstance(valor, str) or not valor.strip():
-            continue
-        valor_limpio = valor.strip()
-        if _normalizar_texto_ubicacion(valor_limpio) not in excluidos:
-            return valor_limpio
-    return None
-
-
-def _extraer_ubicacion_administrativa_desde_address(address: dict[str, Any]) -> dict[str, str | None]:
-    if str(address.get("country_code") or "").lower() not in {"", PAIS_ECUADOR_CODIGO}:
-        return _ubicacion_admin_vacia()
-
-    provincia = _texto_address(address, ["state", "region"])
-    canton = _texto_address(address, ["county", "city", "municipality", "town"])
-    parroquia = _texto_address_distinto_de(
-        address,
-        [
-            "city_district",
-            "village",
-            "suburb",
-            "residential",
-            "neighbourhood",
-            "quarter",
-            "borough",
-            "hamlet",
-            "town",
-            "municipality",
-        ],
-        [canton],
-    )
-    if parroquia is None:
-        parroquia = _texto_address(address, ["city_district", "village", "suburb", "town", "municipality"])
-
-    return {
-        "provincia": provincia,
-        "canton": canton,
-        "parroquia": parroquia,
-    }
-
-
-def _resolver_ubicacion_administrativa(latitud: float, longitud: float) -> dict[str, str | None]:
-    if not (-90 <= latitud <= 90 and -180 <= longitud <= 180):
-        return _ubicacion_admin_vacia()
-
-    query = urlencode(
-        {
-            "format": "jsonv2",
-            "lat": latitud,
-            "lon": longitud,
-            "zoom": 18,
-            "addressdetails": 1,
-        }
-    )
-    http_request = urlrequest.Request(
-        f"{NOMINATIM_REVERSE_URL}?{query}",
-        headers={
-            "Accept": "application/json",
-            "User-Agent": NOMINATIM_USER_AGENT,
-        },
-        method="GET",
-    )
-
-    try:
-        with urlrequest.urlopen(http_request, timeout=NOMINATIM_TIMEOUT_SECONDS) as response:
-            body = response.read().decode("utf-8")
-    except (OSError, urlerror.HTTPError, TimeoutError, ValueError):
-        return _ubicacion_admin_vacia()
-
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        return _ubicacion_admin_vacia()
-
-    address = data.get("address") if isinstance(data, dict) else None
-    if not isinstance(address, dict):
-        return _ubicacion_admin_vacia()
-    return _extraer_ubicacion_administrativa_desde_address(address)
 
 
 def _contactos_activos_por_telefono(db: Session, telefonos: list[str]) -> list[TelegramContacto]:
@@ -1659,6 +1550,7 @@ def _guardar_reporte_evento(
             status_code=status.HTTP_409_CONFLICT,
             detail="El reporte de evento no tiene foto y descripcion completas.",
         )
+    ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
 
     evento = TelegramEvento(
         contacto_id=contacto.id,
@@ -1667,6 +1559,9 @@ def _guardar_reporte_evento(
         foto_file_unique_id=foto.get("file_unique_id"),
         latitud=Decimal(str(latitud)),
         longitud=Decimal(str(longitud)),
+        provincia=ubicacion_admin["provincia"],
+        canton=ubicacion_admin["canton"],
+        parroquia=ubicacion_admin["parroquia"],
     )
     db.add(evento)
     parametros["ubicacion"] = {"latitud": latitud, "longitud": longitud}
@@ -1681,6 +1576,9 @@ def _guardar_reporte_evento(
         "foto_file_unique_id": foto.get("file_unique_id"),
         "latitud": latitud,
         "longitud": longitud,
+        "provincia": ubicacion_admin["provincia"],
+        "canton": ubicacion_admin["canton"],
+        "parroquia": ubicacion_admin["parroquia"],
     }
     registro.estado = "COMPLETADA"
     registro.fecha_respuesta = datetime.now(timezone.utc)
@@ -1853,6 +1751,7 @@ def _guardar_foto_y_finalizar_alerta(
     cantidad_personas_riesgo = int(parametros.get("cantidad_personas_riesgo") or 0)
     latitud = float(ubicacion["latitud"])
     longitud = float(ubicacion["longitud"])
+    ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
 
     evento = TelegramEvento(
         contacto_id=contacto.id,
@@ -1865,8 +1764,14 @@ def _guardar_foto_y_finalizar_alerta(
         foto_file_unique_id=foto.get("file_unique_id"),
         latitud=Decimal(str(latitud)),
         longitud=Decimal(str(longitud)),
+        provincia=ubicacion_admin["provincia"],
+        canton=ubicacion_admin["canton"],
+        parroquia=ubicacion_admin["parroquia"],
     )
     db.add(evento)
+    parametros["provincia"] = ubicacion_admin["provincia"]
+    parametros["canton"] = ubicacion_admin["canton"]
+    parametros["parroquia"] = ubicacion_admin["parroquia"]
     registro.parametros = parametros
     registro.respuesta = parametros | {"evento_id": None}
     registro.estado = "COMPLETADA"
@@ -3894,16 +3799,23 @@ def listar_eventos(
         .order_by(TelegramEvento.fecha_reporte.desc())
     ).all()
 
-    ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
     respuesta: list[EventoRespuesta] = []
+    ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
+    hubo_ubicaciones_actualizadas = False
     for evento, nombre_alerta in filas:
         latitud = float(evento.latitud)
         longitud = float(evento.longitud)
-        cache_key = (latitud, longitud)
-        ubicacion_admin = ubicaciones_cache.get(cache_key)
-        if ubicacion_admin is None:
-            ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
-            ubicaciones_cache[cache_key] = ubicacion_admin
+        if evento.provincia is None or evento.canton is None or evento.parroquia is None:
+            cache_key = (latitud, longitud)
+            ubicacion_admin = ubicaciones_cache.get(cache_key)
+            if ubicacion_admin is None:
+                ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
+                ubicaciones_cache[cache_key] = ubicacion_admin
+            if ubicacion_admin["provincia"] or ubicacion_admin["canton"] or ubicacion_admin["parroquia"]:
+                evento.provincia = ubicacion_admin["provincia"] or evento.provincia
+                evento.canton = ubicacion_admin["canton"] or evento.canton
+                evento.parroquia = ubicacion_admin["parroquia"] or evento.parroquia
+                hubo_ubicaciones_actualizadas = True
 
         respuesta.append(
             EventoRespuesta(
@@ -3916,13 +3828,15 @@ def listar_eventos(
                 cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
                 latitud=latitud,
                 longitud=longitud,
-                provincia=ubicacion_admin["provincia"],
-                canton=ubicacion_admin["canton"],
-                parroquia=ubicacion_admin["parroquia"],
+                provincia=evento.provincia,
+                canton=evento.canton,
+                parroquia=evento.parroquia,
                 fecha_reporte=_formatear_fecha_reporte(evento.fecha_reporte),
                 foto_url=str(request.url_for("obtener_foto_evento", evento_id=evento.id)),
             )
         )
+    if hubo_ubicaciones_actualizadas:
+        db.commit()
     return respuesta
 
 

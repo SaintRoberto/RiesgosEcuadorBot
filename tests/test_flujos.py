@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app import ubicacion
 from app.routes import flujos
 from app.database import engine, get_db
 from app.main import app
@@ -63,7 +64,7 @@ class FakeTelegramSender:
 
 
 def test_extrae_ubicacion_administrativa_con_fallback_de_nominatim() -> None:
-    ubicacion = flujos._extraer_ubicacion_administrativa_desde_address(
+    ubicacion_admin = ubicacion.extraer_ubicacion_administrativa_desde_address(
         {
             "residential": "Coop. Puerto Rico",
             "suburb": "Terminal Portuario Internacional Puerto Hondo S.A. - TPI",
@@ -75,7 +76,7 @@ def test_extrae_ubicacion_administrativa_con_fallback_de_nominatim() -> None:
         }
     )
 
-    assert ubicacion == {
+    assert ubicacion_admin == {
         "provincia": "Guayas",
         "canton": "Guayaquil",
         "parroquia": "Puerto Hondo",
@@ -83,7 +84,7 @@ def test_extrae_ubicacion_administrativa_con_fallback_de_nominatim() -> None:
 
 
 def test_extrae_parroquia_mas_especifica_que_canton() -> None:
-    ubicacion = flujos._extraer_ubicacion_administrativa_desde_address(
+    ubicacion_admin = ubicacion.extraer_ubicacion_administrativa_desde_address(
         {
             "suburb": "La Puntilla",
             "town": "Samborondon",
@@ -93,7 +94,7 @@ def test_extrae_parroquia_mas_especifica_que_canton() -> None:
         }
     )
 
-    assert ubicacion == {
+    assert ubicacion_admin == {
         "provincia": "Guayas",
         "canton": "Samborondon",
         "parroquia": "La Puntilla",
@@ -115,6 +116,9 @@ def _asegurar_tabla_eventos(session: Session) -> None:
                 cantidad_personas_riesgo integer NOT NULL DEFAULT 0,
                 latitud numeric(10,7) NOT NULL,
                 longitud numeric(10,7) NOT NULL,
+                provincia character varying(150),
+                canton character varying(150),
+                parroquia character varying(150),
                 fecha_reporte timestamp with time zone NOT NULL DEFAULT now(),
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
@@ -137,6 +141,9 @@ def _asegurar_tabla_eventos(session: Session) -> None:
     )
     session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS tipo_alerta_id bigint"))
     session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS alerta_encuesta_id bigint"))
+    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS provincia character varying(150)"))
+    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS canton character varying(150)"))
+    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS parroquia character varying(150)"))
     session.execute(
         text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS personas_en_riesgo boolean NOT NULL DEFAULT false")
     )
@@ -1163,13 +1170,18 @@ def test_webhook_contacto_registrado_muestra_menu_con_texto() -> None:
         connection.close()
 
 
-def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
+def test_webhook_reporte_alerta_completo_desde_tipo_alerta(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        monkeypatch.setattr(
+            flujos,
+            "_resolver_ubicacion_administrativa",
+            lambda latitud, longitud: {"provincia": "Guayas", "canton": "Guayaquil", "parroquia": "Tarqui"},
+        )
         _asegurar_catalogos_alertas(session)
         _asegurar_tabla_eventos(session)
         telefono = f"+593020{uuid4().int % 1000000:06d}"
@@ -1336,7 +1348,10 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
                     e.personas_en_riesgo,
                     e.cantidad_personas_riesgo,
                     e.foto_file_id,
-                    e.foto_file_unique_id
+                    e.foto_file_unique_id,
+                    e.provincia,
+                    e.canton,
+                    e.parroquia
                 FROM telegram_eventos e
                 LEFT JOIN tipo_alertas t ON t.id = e.tipo_alerta_id
                 LEFT JOIN alerta_encuesta ae ON ae.id = e.alerta_encuesta_id
@@ -1354,6 +1369,9 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta() -> None:
         assert evento["cantidad_personas_riesgo"] == 25
         assert evento["foto_file_id"] == "foto-big"
         assert evento["foto_file_unique_id"] == "unique-big"
+        assert evento["provincia"] == "Guayas"
+        assert evento["canton"] == "Guayaquil"
+        assert evento["parroquia"] == "Tarqui"
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -2166,7 +2184,7 @@ def test_webhook_reporte_evento_queda_seleccionado() -> None:
         connection.close()
 
 
-def test_webhook_guarda_reporte_evento_con_foto_descripcion_y_ubicacion() -> None:
+def test_webhook_guarda_reporte_evento_con_foto_descripcion_y_ubicacion(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -2174,6 +2192,11 @@ def test_webhook_guarda_reporte_evento_con_foto_descripcion_y_ubicacion() -> Non
     chat_id = -(uuid4().int % 1000000000)
 
     try:
+        monkeypatch.setattr(
+            flujos,
+            "_resolver_ubicacion_administrativa",
+            lambda latitud, longitud: {"provincia": "Pichincha", "canton": "Quito", "parroquia": "Inaquito"},
+        )
         _asegurar_tabla_eventos(session)
         session.execute(
             text(
@@ -2271,7 +2294,15 @@ def test_webhook_guarda_reporte_evento_con_foto_descripcion_y_ubicacion() -> Non
         row = session.execute(
             text(
                 """
-                SELECT e.descripcion, e.foto_file_id, e.foto_file_unique_id, e.latitud, e.longitud
+                SELECT
+                    e.descripcion,
+                    e.foto_file_id,
+                    e.foto_file_unique_id,
+                    e.latitud,
+                    e.longitud,
+                    e.provincia,
+                    e.canton,
+                    e.parroquia
                 FROM telegram_eventos e
                 JOIN telegram_contactos c ON c.id = e.contacto_id
                 WHERE c.telefono = :telefono
@@ -2284,6 +2315,9 @@ def test_webhook_guarda_reporte_evento_con_foto_descripcion_y_ubicacion() -> Non
         assert row["foto_file_unique_id"] == "foto-large-unique"
         assert float(row["latitud"]) == -0.1806532
         assert float(row["longitud"]) == -78.4678382
+        assert row["provincia"] == "Pichincha"
+        assert row["canton"] == "Quito"
+        assert row["parroquia"] == "Inaquito"
     finally:
         app.dependency_overrides.clear()
         session.close()

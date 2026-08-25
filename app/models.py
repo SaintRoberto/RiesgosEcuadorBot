@@ -222,6 +222,9 @@ class TelegramEvento(Base):
     cantidad_personas_riesgo: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     latitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
     longitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
+    provincia: Mapped[str | None] = mapped_column(String(150))
+    canton: Mapped[str | None] = mapped_column(String(150))
+    parroquia: Mapped[str | None] = mapped_column(String(150))
     fecha_reporte: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
