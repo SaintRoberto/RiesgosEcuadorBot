@@ -471,6 +471,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
     assert "/api/telegram/reportes/alertas/{tipo_alerta_id}" in paths
+    assert "/api/telegram/reportes/barridos/tipo-alerta/{tipo_alerta_id}" in paths
     assert "/api/telegram/reportes/tipo-alerta/{tipo_alerta_id}/barridos/{barrido_id}" in paths
     assert "/api/telegram/reportes/barridos/{barrido_id}" not in paths
     assert "/api/telegram/tipo-alertas" in paths
@@ -1711,6 +1712,30 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         )
         _asegurar_catalogos_alertas(session)
         _asegurar_tablas_barridos(session)
+        _asegurar_tabla_eventos(session)
+        tipo_alerta_nombre = f"ALERTA TEST {uuid4().hex[:8]}"
+        tipo_alerta_id = session.execute(
+            text(
+                """
+                INSERT INTO tipo_alertas (descripcion, activo)
+                VALUES (:descripcion, true)
+                RETURNING id
+                """
+            ),
+            {"descripcion": tipo_alerta_nombre},
+        ).scalar_one()
+        alerta_encuesta_id = session.execute(
+            text(
+                """
+                INSERT INTO alerta_encuesta
+                    (tipo_alerta_id, tipo_flujo_id, nombre, descripcion, color, orden, activo)
+                VALUES
+                    (:tipo_alerta_id, 3, 'NIVEL TEST', 'Nivel de prueba', 'verde', 1, true)
+                RETURNING id
+                """
+            ),
+            {"tipo_alerta_id": tipo_alerta_id},
+        ).scalar_one()
         contacto_id = session.execute(
             text(
                 """
@@ -1727,21 +1752,11 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
             text(
                 """
                 INSERT INTO telegram_barridos (tipo_alerta_id, codigo, mensaje)
-                VALUES (6, 'BARRIDO-REPORTE', 'Reporte de prueba')
+                VALUES (:tipo_alerta_id, 'BARRIDO-REPORTE', 'Reporte de prueba')
                 RETURNING id
                 """
-            )
-        ).scalar_one()
-        lluvia_fuerte_id = session.execute(
-            text(
-                """
-                SELECT id
-                FROM alerta_encuesta
-                WHERE tipo_alerta_id = 6
-                  AND nombre = 'LLUVIA FUERTE'
-                LIMIT 1
-                """
-            )
+            ),
+            {"tipo_alerta_id": tipo_alerta_id},
         ).scalar_one()
         session.execute(
             text(
@@ -1770,7 +1785,38 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
                     )
                 """
             ),
-            {"barrido_id": barrido_id, "contacto_id": contacto_id, "alerta_encuesta_id": lluvia_fuerte_id},
+            {"barrido_id": barrido_id, "contacto_id": contacto_id, "alerta_encuesta_id": alerta_encuesta_id},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_eventos
+                    (
+                        contacto_id,
+                        tipo_alerta_id,
+                        alerta_encuesta_id,
+                        descripcion,
+                        foto_file_id,
+                        latitud,
+                        longitud
+                    )
+                VALUES
+                    (
+                        :contacto_id,
+                        :tipo_alerta_id,
+                        :alerta_encuesta_id,
+                        'Alerta de prueba',
+                        'foto-alerta',
+                        -0.1806532,
+                        -78.4678382
+                    )
+                """
+            ),
+            {
+                "contacto_id": contacto_id,
+                "tipo_alerta_id": tipo_alerta_id,
+                "alerta_encuesta_id": alerta_encuesta_id,
+            },
         )
 
         def override_get_db() -> Generator[Session, None, None]:
@@ -1779,35 +1825,45 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         app.dependency_overrides[get_db] = override_get_db
         client = TestClient(app)
 
-        respuesta = client.get("/api/telegram/reportes/alertas/6")
+        respuesta = client.get(f"/api/telegram/reportes/alertas/{tipo_alerta_id}")
 
         assert respuesta.status_code == 200
         data = respuesta.json()
-        assert data["barrido_id"] == barrido_id
-        assert data["tipo_alerta_id"] == 6
-        assert data["nombre_alerta"] == "LLUVIAS"
+        assert data["barrido_id"] is None
+        assert data["tipo_alerta_id"] == tipo_alerta_id
+        assert data["nombre_alerta"] == tipo_alerta_nombre
         assert data["total"] == 1
         cantidades = {item["nombre"]: item["cantidad"] for item in data["opciones"]}
-        assert cantidades["LLUVIA FUERTE"] == 1
+        assert cantidades["NIVEL TEST"] == 1
         assert data["chart_url"].startswith("https://quickchart.io/chart?")
 
-        lista_barridos = client.get("/api/telegram/barridos/tipo-alerta/6")
+        reporte_barrido = client.get(f"/api/telegram/reportes/barridos/tipo-alerta/{tipo_alerta_id}")
+        assert reporte_barrido.status_code == 200
+        data_barrido = reporte_barrido.json()
+        assert data_barrido["barrido_id"] == barrido_id
+        assert data_barrido["tipo_alerta_id"] == tipo_alerta_id
+        assert data_barrido["nombre_alerta"] == tipo_alerta_nombre
+        assert data_barrido["total"] == 1
+
+        lista_barridos = client.get(f"/api/telegram/barridos/tipo-alerta/{tipo_alerta_id}")
         assert lista_barridos.status_code == 200
         barrido_item = next(item for item in lista_barridos.json() if item["id"] == barrido_id)
-        assert barrido_item["tipo_alerta_id"] == 6
-        assert barrido_item["nombre_alerta"] == "LLUVIAS"
+        assert barrido_item["tipo_alerta_id"] == tipo_alerta_id
+        assert barrido_item["nombre_alerta"] == tipo_alerta_nombre
         assert barrido_item["total_respuestas"] == 1
 
-        respuesta_por_barrido = client.get(f"/api/telegram/reportes/tipo-alerta/6/barridos/{barrido_id}")
+        respuesta_por_barrido = client.get(
+            f"/api/telegram/reportes/tipo-alerta/{tipo_alerta_id}/barridos/{barrido_id}"
+        )
         assert respuesta_por_barrido.status_code == 200
         assert respuesta_por_barrido.json()["barrido_id"] == barrido_id
 
         respuestas_barridos = client.get("/api/telegram/barridos/respuestas")
         assert respuestas_barridos.status_code == 200
         respuesta_item = next(item for item in respuestas_barridos.json() if item["barrido_id"] == barrido_id)
-        assert respuesta_item["tipo_alerta_id"] == 6
-        assert respuesta_item["nombre_alerta"] == "LLUVIAS"
-        assert respuesta_item["nivel_alerta"] == "LLUVIA FUERTE"
+        assert respuesta_item["tipo_alerta_id"] == tipo_alerta_id
+        assert respuesta_item["nombre_alerta"] == tipo_alerta_nombre
+        assert respuesta_item["nivel_alerta"] == "NIVEL TEST"
         assert respuesta_item["contacto_id"] == contacto_id
         assert respuesta_item["latitud"] == -0.1806532
         assert respuesta_item["longitud"] == -78.4678382
@@ -1837,6 +1893,30 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
         )()
         _asegurar_catalogos_alertas(session)
         _asegurar_tablas_barridos(session)
+        _asegurar_tabla_eventos(session)
+        tipo_alerta_nombre = f"REPORTE TEST {uuid4().hex[:8]}"
+        tipo_alerta_id = session.execute(
+            text(
+                """
+                INSERT INTO tipo_alertas (descripcion, activo)
+                VALUES (:descripcion, true)
+                RETURNING id
+                """
+            ),
+            {"descripcion": tipo_alerta_nombre},
+        ).scalar_one()
+        alerta_encuesta_id = session.execute(
+            text(
+                """
+                INSERT INTO alerta_encuesta
+                    (tipo_alerta_id, tipo_flujo_id, nombre, descripcion, color, orden, activo)
+                VALUES
+                    (:tipo_alerta_id, 3, 'NIVEL MENU', 'Nivel del menu', 'verde', 1, true)
+                RETURNING id
+                """
+            ),
+            {"tipo_alerta_id": tipo_alerta_id},
+        ).scalar_one()
         contacto_id = session.execute(
             text(
                 """
@@ -1853,21 +1933,11 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
             text(
                 """
                 INSERT INTO telegram_barridos (tipo_alerta_id, codigo, mensaje)
-                VALUES (6, 'BARRIDO-TELEGRAM', 'Reporte de prueba')
+                VALUES (:tipo_alerta_id, 'BARRIDO-TELEGRAM', 'Reporte de prueba')
                 RETURNING id
                 """
-            )
-        ).scalar_one()
-        lluvia_fuerte_id = session.execute(
-            text(
-                """
-                SELECT id
-                FROM alerta_encuesta
-                WHERE tipo_alerta_id = 6
-                  AND nombre = 'LLUVIA FUERTE'
-                LIMIT 1
-                """
-            )
+            ),
+            {"tipo_alerta_id": tipo_alerta_id},
         ).scalar_one()
         session.execute(
             text(
@@ -1878,7 +1948,38 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
                     (:barrido_id, :contacto_id, :alerta_encuesta_id, -0.1806532, -78.4678382)
                 """
             ),
-            {"barrido_id": barrido_id, "contacto_id": contacto_id, "alerta_encuesta_id": lluvia_fuerte_id},
+            {"barrido_id": barrido_id, "contacto_id": contacto_id, "alerta_encuesta_id": alerta_encuesta_id},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_eventos
+                    (
+                        contacto_id,
+                        tipo_alerta_id,
+                        alerta_encuesta_id,
+                        descripcion,
+                        foto_file_id,
+                        latitud,
+                        longitud
+                    )
+                VALUES
+                    (
+                        :contacto_id,
+                        :tipo_alerta_id,
+                        :alerta_encuesta_id,
+                        'Alerta de menu',
+                        'foto-alerta',
+                        -0.1806532,
+                        -78.4678382
+                    )
+                """
+            ),
+            {
+                "contacto_id": contacto_id,
+                "tipo_alerta_id": tipo_alerta_id,
+                "alerta_encuesta_id": alerta_encuesta_id,
+            },
         )
 
         def override_get_db() -> Generator[Session, None, None]:
@@ -1903,31 +2004,108 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
 
         assert menu.status_code == 200
         assert menu.json()["estado"] == "MENU_REPORTES"
-        assert sender.messages[-1]["text"] == "Seleccione el tipo de alerta del reporte que desea visualizar:"
-        assert sender.messages[-1]["reply_markup"]["inline_keyboard"][5][0]["callback_data"] == "REPORTE_ALERTA:6"
+        assert sender.messages[-1]["text"] == "Que reportes desea visualizar"
+        assert sender.messages[-1]["reply_markup"]["inline_keyboard"] == [
+            [{"text": "Reporte Alertas", "callback_data": "MENU_REPORTE_ALERTAS"}],
+            [{"text": "Reportes barridos", "callback_data": "MENU_REPORTE_BARRIDOS"}],
+        ]
 
-        respuesta = client.post(
+        menu_alertas = client.post(
             "/api/telegram/webhook",
             json={
                 "update_id": 110,
                 "callback_query": {
-                    "id": "callback-reporte-alerta",
+                    "id": "callback-menu-reporte-alertas",
                     "from": {"id": chat_id, "first_name": "GAD"},
                     "message": {
                         "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
                     },
-                    "data": "REPORTE_ALERTA:6",
+                    "data": "MENU_REPORTE_ALERTAS",
+                },
+            },
+        )
+        assert menu_alertas.status_code == 200
+        assert menu_alertas.json()["estado"] == "MENU_REPORTES_ALERTAS"
+        assert (
+            sender.messages[-1]["text"]
+            == "Seleccione el tipo de alerta del reporte de alertas que desea visualizar:"
+        )
+        assert any(
+            row[0]["callback_data"] == f"REPORTE_ALERTAS:{tipo_alerta_id}"
+            for row in sender.messages[-1]["reply_markup"]["inline_keyboard"]
+        )
+
+        respuesta_alertas = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 111,
+                "callback_query": {
+                    "id": "callback-reporte-alertas",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": f"REPORTE_ALERTAS:{tipo_alerta_id}",
                 },
             },
         )
 
-        assert respuesta.status_code == 200
-        data = respuesta.json()
-        assert data["estado"] == "REPORTE_ALERTA_ENVIADO"
-        assert data["mensaje"] == "Reporte generado para LLUVIAS."
-        assert "Reporte de alertas: LLUVIAS" in sender.messages[-1]["text"]
+        assert respuesta_alertas.status_code == 200
+        data_alertas = respuesta_alertas.json()
+        assert data_alertas["estado"] == "REPORTE_ALERTA_ENVIADO"
+        assert data_alertas["mensaje"] == f"Reporte generado para {tipo_alerta_nombre}."
+        assert f"Reporte de alertas: {tipo_alerta_nombre}" in sender.messages[-1]["text"]
+        assert "Barrido id:" not in sender.messages[-1]["text"]
+        assert "- NIVEL MENU: 1" in sender.messages[-1]["text"]
+        assert sender.photos[-1]["photo"].startswith("https://quickchart.io/chart?")
+
+        menu_barridos = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 112,
+                "callback_query": {
+                    "id": "callback-menu-reporte-barridos",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": "MENU_REPORTE_BARRIDOS",
+                },
+            },
+        )
+        assert menu_barridos.status_code == 200
+        assert menu_barridos.json()["estado"] == "MENU_REPORTES_BARRIDOS"
+        assert (
+            sender.messages[-1]["text"]
+            == "Seleccione el tipo de alerta del reporte de barridos que desea visualizar:"
+        )
+        assert any(
+            row[0]["callback_data"] == f"REPORTE_BARRIDOS:{tipo_alerta_id}"
+            for row in sender.messages[-1]["reply_markup"]["inline_keyboard"]
+        )
+
+        respuesta_barridos = client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 113,
+                "callback_query": {
+                    "id": "callback-reporte-barridos",
+                    "from": {"id": chat_id, "first_name": "GAD"},
+                    "message": {
+                        "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
+                    },
+                    "data": f"REPORTE_BARRIDOS:{tipo_alerta_id}",
+                },
+            },
+        )
+
+        assert respuesta_barridos.status_code == 200
+        data_barridos = respuesta_barridos.json()
+        assert data_barridos["estado"] == "REPORTE_BARRIDO_ENVIADO"
+        assert data_barridos["mensaje"] == f"Reporte de barrido generado para {tipo_alerta_nombre}."
+        assert f"Reporte de alertas: {tipo_alerta_nombre}" in sender.messages[-1]["text"]
         assert f"Barrido id: {barrido_id}" in sender.messages[-1]["text"]
-        assert "- LLUVIA FUERTE: 1" in sender.messages[-1]["text"]
+        assert "- NIVEL MENU: 1" in sender.messages[-1]["text"]
         assert sender.photos[-1]["photo"].startswith("https://quickchart.io/chart?")
     finally:
         flujos.get_settings = get_settings_original

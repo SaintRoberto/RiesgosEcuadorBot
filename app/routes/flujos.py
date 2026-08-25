@@ -119,6 +119,10 @@ MENSAJE_ACCESO_NO_AUTORIZADO = (
 )
 CALLBACK_TIPO_ALERTA_PREFIX = "TIPO_ALERTA:"
 CALLBACK_REPORTE_ALERTA_PREFIX = "REPORTE_ALERTA:"
+CALLBACK_MENU_REPORTE_ALERTAS = "MENU_REPORTE_ALERTAS"
+CALLBACK_MENU_REPORTE_BARRIDOS = "MENU_REPORTE_BARRIDOS"
+CALLBACK_REPORTE_ALERTAS_PREFIX = "REPORTE_ALERTAS:"
+CALLBACK_REPORTE_BARRIDOS_PREFIX = "REPORTE_BARRIDOS:"
 CALLBACK_ALERTA_RIESGO_SI = "ALERTA_RIESGO:SI"
 CALLBACK_ALERTA_RIESGO_NO = "ALERTA_RIESGO:NO"
 CALLBACK_REPORTE_BARRIDO = "REPORTE_BARRIDO"
@@ -131,7 +135,9 @@ TIPO_FLUJO_BARRIDO = "BARRIDO"
 TIPO_FLUJO_AMBOS = "AMBOS"
 SCRIPT_BARRIDO_LLUVIA_CODIGO = "BARRIDO-AUTO"
 SCRIPT_BARRIDO_LLUVIA_MENSAJE = "Barrido de lluvias"
-MENSAJE_MENU_REPORTES = "Seleccione el tipo de alerta del reporte que desea visualizar:"
+MENSAJE_MENU_TIPO_REPORTES = "Que reportes desea visualizar"
+MENSAJE_MENU_REPORTES_ALERTAS = "Seleccione el tipo de alerta del reporte de alertas que desea visualizar:"
+MENSAJE_MENU_REPORTES_BARRIDOS = "Seleccione el tipo de alerta del reporte de barridos que desea visualizar:"
 QUICKCHART_URL = "https://quickchart.io/chart"
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
 NOMINATIM_USER_AGENT = "RiesgosEcuadorBot/1.0"
@@ -724,13 +730,37 @@ def _teclado_menu_principal(db: Session) -> dict[str, Any]:
 
 
 def _teclado_menu_reportes(db: Session) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Reporte Alertas", "callback_data": CALLBACK_MENU_REPORTE_ALERTAS}],
+            [{"text": "Reportes barridos", "callback_data": CALLBACK_MENU_REPORTE_BARRIDOS}],
+        ],
+    }
+
+
+def _teclado_menu_reportes_alertas(db: Session) -> dict[str, Any]:
     tipos_alerta = _tipos_alerta_activos(db)
     return {
         "inline_keyboard": [
             [
                 {
                     "text": tipo_alerta.descripcion,
-                    "callback_data": f"{CALLBACK_REPORTE_ALERTA_PREFIX}{tipo_alerta.id}",
+                    "callback_data": f"{CALLBACK_REPORTE_ALERTAS_PREFIX}{tipo_alerta.id}",
+                }
+            ]
+            for tipo_alerta in tipos_alerta
+        ],
+    }
+
+
+def _teclado_menu_reportes_barridos(db: Session) -> dict[str, Any]:
+    tipos_alerta = _tipos_alerta_activos(db)
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": tipo_alerta.descripcion,
+                    "callback_data": f"{CALLBACK_REPORTE_BARRIDOS_PREFIX}{tipo_alerta.id}",
                 }
             ]
             for tipo_alerta in tipos_alerta
@@ -918,8 +948,26 @@ def _mostrar_menu_reportes_si_es_posible(db: Session, sender: TelegramSender | N
     _responder_si_es_posible(
         sender,
         chat_id,
-        MENSAJE_MENU_REPORTES,
+        MENSAJE_MENU_TIPO_REPORTES,
         reply_markup=_teclado_menu_reportes(db),
+    )
+
+
+def _mostrar_menu_reportes_alertas_si_es_posible(db: Session, sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(
+        sender,
+        chat_id,
+        MENSAJE_MENU_REPORTES_ALERTAS,
+        reply_markup=_teclado_menu_reportes_alertas(db),
+    )
+
+
+def _mostrar_menu_reportes_barridos_si_es_posible(db: Session, sender: TelegramSender | None, chat_id: int) -> None:
+    _responder_si_es_posible(
+        sender,
+        chat_id,
+        MENSAJE_MENU_REPORTES_BARRIDOS,
+        reply_markup=_teclado_menu_reportes_barridos(db),
     )
 
 
@@ -1299,7 +1347,7 @@ def _obtener_reporte_barrido_por_tipo(
     return _obtener_reporte_barrido(db, barrido)
 
 
-def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRespuesta:
+def _obtener_reporte_barrido_ultimo_por_tipo(db: Session, tipo_alerta_id: int) -> ReporteAlertaRespuesta:
     _obtener_tipo_alerta_activa(db, tipo_alerta_id)
     barrido = _ultimo_barrido_por_tipo_alerta(db, tipo_alerta_id)
     if barrido is None:
@@ -1308,6 +1356,54 @@ def _obtener_reporte_alerta(db: Session, tipo_alerta_id: int) -> ReporteAlertaRe
             detail="No existe un barrido para este tipo de alerta.",
         )
     return _obtener_reporte_barrido(db, barrido)
+
+
+def _obtener_reporte_alertas(db: Session, tipo_alerta_id: int) -> ReporteAlertaRespuesta:
+    tipo_alerta = _obtener_tipo_alerta_activa(db, tipo_alerta_id)
+    rows = db.execute(
+        select(
+            AlertaEncuesta.id,
+            AlertaEncuesta.nombre,
+            AlertaEncuesta.descripcion,
+            AlertaEncuesta.color,
+            func.count(TelegramEvento.id).label("cantidad"),
+        )
+        .join(TipoFlujo, TipoFlujo.id == AlertaEncuesta.tipo_flujo_id)
+        .outerjoin(
+            TelegramEvento,
+            and_(
+                TelegramEvento.alerta_encuesta_id == AlertaEncuesta.id,
+                TelegramEvento.tipo_alerta_id == tipo_alerta_id,
+                TelegramEvento.activo.is_(True),
+            ),
+        )
+        .where(
+            AlertaEncuesta.tipo_alerta_id == tipo_alerta_id,
+            AlertaEncuesta.activo.is_(True),
+            TipoFlujo.activo.is_(True),
+            TipoFlujo.codigo.in_([TIPO_FLUJO_ALERTA, TIPO_FLUJO_AMBOS]),
+        )
+        .group_by(AlertaEncuesta.id, AlertaEncuesta.nombre, AlertaEncuesta.descripcion, AlertaEncuesta.color)
+        .order_by(AlertaEncuesta.orden)
+    ).all()
+    opciones = [
+        ReporteAlertaOpcionRespuesta(
+            alerta_encuesta_id=int(alerta_encuesta_id),
+            nombre=str(nombre),
+            descripcion=descripcion,
+            color=color,
+            cantidad=int(cantidad),
+        )
+        for alerta_encuesta_id, nombre, descripcion, color, cantidad in rows
+    ]
+    reporte = ReporteAlertaRespuesta(
+        tipo_alerta_id=tipo_alerta.id,
+        nombre_alerta=tipo_alerta.descripcion,
+        total=sum(opcion.cantidad for opcion in opciones),
+        opciones=opciones,
+        chart_url="",
+    )
+    return reporte.model_copy(update={"chart_url": _crear_url_grafico_reporte_alerta(reporte)})
 
 
 def _barrido_resumen_respuesta(
@@ -1330,12 +1426,18 @@ def _barrido_resumen_respuesta(
 def _formatear_reporte_alerta(reporte: ReporteAlertaRespuesta) -> str:
     lineas = [
         f"Reporte de alertas: {reporte.nombre_alerta}",
-        f"Barrido id: {reporte.barrido_id}",
-        f"Fecha barrido: {reporte.fecha_barrido}",
-        f"Total de reportes: {reporte.total}",
-        "",
-        "Nivel por tipo:",
     ]
+    if reporte.barrido_id is not None:
+        lineas.append(f"Barrido id: {reporte.barrido_id}")
+    if reporte.fecha_barrido is not None:
+        lineas.append(f"Fecha barrido: {reporte.fecha_barrido}")
+    lineas.extend(
+        [
+            f"Total de reportes: {reporte.total}",
+            "",
+            "Nivel por tipo:",
+        ]
+    )
     for opcion in reporte.opciones:
         lineas.append(f"- {opcion.nombre}: {opcion.cantidad}")
     return "\n".join(lineas)
@@ -1418,13 +1520,36 @@ def _enviar_reporte_alerta_telegram(
     chat_id: int,
     tipo_alerta_id: int,
 ) -> ReporteAlertaRespuesta:
-    reporte = _obtener_reporte_alerta(db, tipo_alerta_id)
+    reporte = _obtener_reporte_alertas(db, tipo_alerta_id)
     _responder_si_es_posible(sender, chat_id, _formatear_reporte_alerta(reporte))
     try:
         sender.send_photo(
             chat_id=chat_id,
             photo=reporte.chart_url,
             caption=f"Grafico de alertas: {reporte.nombre_alerta}",
+        )
+    except TelegramDeliveryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo enviar el grafico por Telegram.",
+        ) from exc
+
+    return reporte
+
+
+def _enviar_reporte_barrido_telegram(
+    db: Session,
+    sender: TelegramSender,
+    chat_id: int,
+    tipo_alerta_id: int,
+) -> ReporteAlertaRespuesta:
+    reporte = _obtener_reporte_barrido_ultimo_por_tipo(db, tipo_alerta_id)
+    _responder_si_es_posible(sender, chat_id, _formatear_reporte_alerta(reporte))
+    try:
+        sender.send_photo(
+            chat_id=chat_id,
+            photo=reporte.chart_url,
+            caption=f"Grafico de barridos: {reporte.nombre_alerta}",
         )
     except TelegramDeliveryError as exc:
         raise HTTPException(
@@ -2218,7 +2343,35 @@ def _recibir_callback_menu_principal(
             hay_personas_en_riesgo=data == CALLBACK_ALERTA_RIESGO_SI,
         )
 
-    if isinstance(data, str) and data.startswith(CALLBACK_REPORTE_ALERTA_PREFIX):
+    if data in {CALLBACK_MENU_REPORTE_ALERTAS, CALLBACK_MENU_REPORTE_BARRIDOS}:
+        if not _es_administrador(int(telegram_user_id)):
+            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para generar reportes.")
+            return TelegramWebhookRespuesta(
+                estado="REPORTE_NO_AUTORIZADO",
+                mensaje="El usuario no tiene permisos para generar reportes.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        if data == CALLBACK_MENU_REPORTE_ALERTAS:
+            _mostrar_menu_reportes_alertas_si_es_posible(db, sender, int(chat_id))
+            return TelegramWebhookRespuesta(
+                estado="MENU_REPORTES_ALERTAS",
+                mensaje="Se mostro el menu de reportes de alertas.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        _mostrar_menu_reportes_barridos_si_es_posible(db, sender, int(chat_id))
+        return TelegramWebhookRespuesta(
+            estado="MENU_REPORTES_BARRIDOS",
+            mensaje="Se mostro el menu de reportes de barridos.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    if isinstance(data, str) and data.startswith(CALLBACK_REPORTE_ALERTAS_PREFIX):
         if not _es_administrador(int(telegram_user_id)):
             _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para generar reportes.")
             return TelegramWebhookRespuesta(
@@ -2237,7 +2390,7 @@ def _recibir_callback_menu_principal(
                 chat_id=contacto.chat_id,
             )
         try:
-            tipo_alerta_id = int(data.removeprefix(CALLBACK_REPORTE_ALERTA_PREFIX))
+            tipo_alerta_id = int(data.removeprefix(CALLBACK_REPORTE_ALERTAS_PREFIX))
         except ValueError:
             tipo_alerta_id = 0
         reporte = _enviar_reporte_alerta_telegram(
@@ -2249,6 +2402,49 @@ def _recibir_callback_menu_principal(
         return TelegramWebhookRespuesta(
             estado="REPORTE_ALERTA_ENVIADO",
             mensaje=f"Reporte generado para {reporte.nombre_alerta}.",
+            contacto_id=contacto.id,
+            telefono=contacto.telefono,
+            chat_id=contacto.chat_id,
+        )
+
+    if isinstance(data, str) and (
+        data.startswith(CALLBACK_REPORTE_BARRIDOS_PREFIX) or data.startswith(CALLBACK_REPORTE_ALERTA_PREFIX)
+    ):
+        if not _es_administrador(int(telegram_user_id)):
+            _responder_si_es_posible(sender, int(chat_id), "No tiene permisos para generar reportes.")
+            return TelegramWebhookRespuesta(
+                estado="REPORTE_NO_AUTORIZADO",
+                mensaje="El usuario no tiene permisos para generar reportes.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        if sender is None:
+            return TelegramWebhookRespuesta(
+                estado="TELEGRAM_NO_CONFIGURADO",
+                mensaje="TELEGRAM_BOT_TOKEN no esta configurado.",
+                contacto_id=contacto.id,
+                telefono=contacto.telefono,
+                chat_id=contacto.chat_id,
+            )
+        prefix = (
+            CALLBACK_REPORTE_BARRIDOS_PREFIX
+            if data.startswith(CALLBACK_REPORTE_BARRIDOS_PREFIX)
+            else CALLBACK_REPORTE_ALERTA_PREFIX
+        )
+        try:
+            tipo_alerta_id = int(data.removeprefix(prefix))
+        except ValueError:
+            tipo_alerta_id = 0
+        reporte = _enviar_reporte_barrido_telegram(
+            db=db,
+            sender=sender,
+            chat_id=int(chat_id),
+            tipo_alerta_id=tipo_alerta_id,
+        )
+        return TelegramWebhookRespuesta(
+            estado="REPORTE_BARRIDO_ENVIADO",
+            mensaje=f"Reporte de barrido generado para {reporte.nombre_alerta}.",
             contacto_id=contacto.id,
             telefono=contacto.telefono,
             chat_id=contacto.chat_id,
@@ -3646,13 +3842,26 @@ def listar_respuestas_barridos(
     "/reportes/alertas/{tipo_alerta_id}",
     response_model=ReporteAlertaRespuesta,
     tags=["reportes"],
-    summary="Obtener reporte del ultimo barrido por tipo de alerta",
+    summary="Obtener reporte de alertas por tipo de alerta",
 )
 def obtener_reporte_alerta(
     tipo_alerta_id: int,
     db: Session = Depends(get_db),
 ) -> ReporteAlertaRespuesta:
-    return _obtener_reporte_alerta(db, tipo_alerta_id)
+    return _obtener_reporte_alertas(db, tipo_alerta_id)
+
+
+@router.get(
+    "/reportes/barridos/tipo-alerta/{tipo_alerta_id}",
+    response_model=ReporteAlertaRespuesta,
+    tags=["reportes"],
+    summary="Obtener reporte del ultimo barrido por tipo de alerta",
+)
+def obtener_reporte_ultimo_barrido(
+    tipo_alerta_id: int,
+    db: Session = Depends(get_db),
+) -> ReporteAlertaRespuesta:
+    return _obtener_reporte_barrido_ultimo_por_tipo(db, tipo_alerta_id)
 
 
 @router.get(
