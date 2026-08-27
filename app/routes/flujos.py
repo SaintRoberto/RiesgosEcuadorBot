@@ -35,6 +35,7 @@ from app.schemas import (
     EventoRespuesta,
     FotoEventoRespuesta,
     RegistrarBarridoRequest,
+    ReporteAlertaEventoRespuesta,
     ReporteAlertaOpcionRespuesta,
     ReporteAlertaRespuesta,
     RegistroFlujoRespuesta,
@@ -1287,11 +1288,55 @@ def _obtener_reporte_alertas(db: Session, tipo_alerta_id: int) -> ReporteAlertaR
         )
         for alerta_encuesta_id, nombre, descripcion, color, cantidad in rows
     ]
+    filas_eventos = db.execute(
+        select(TelegramEvento, AlertaEncuesta.nombre.label("nivel_alerta"))
+        .outerjoin(AlertaEncuesta, AlertaEncuesta.id == TelegramEvento.alerta_encuesta_id)
+        .where(
+            TelegramEvento.tipo_alerta_id == tipo_alerta_id,
+            TelegramEvento.activo.is_(True),
+        )
+        .order_by(TelegramEvento.fecha_reporte.desc(), TelegramEvento.id.desc())
+    ).all()
+    eventos: list[ReporteAlertaEventoRespuesta] = []
+    ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
+    hubo_ubicaciones_actualizadas = False
+    for evento, nivel_alerta in filas_eventos:
+        latitud = float(evento.latitud)
+        longitud = float(evento.longitud)
+        if evento.provincia is None or evento.canton is None or evento.parroquia is None:
+            cache_key = (latitud, longitud)
+            ubicacion_admin = ubicaciones_cache.get(cache_key)
+            if ubicacion_admin is None:
+                ubicacion_admin = _resolver_ubicacion_administrativa(latitud, longitud)
+                ubicaciones_cache[cache_key] = ubicacion_admin
+            if ubicacion_admin["provincia"] or ubicacion_admin["canton"] or ubicacion_admin["parroquia"]:
+                evento.provincia = ubicacion_admin["provincia"] or evento.provincia
+                evento.canton = ubicacion_admin["canton"] or evento.canton
+                evento.parroquia = ubicacion_admin["parroquia"] or evento.parroquia
+                hubo_ubicaciones_actualizadas = True
+        eventos.append(
+            ReporteAlertaEventoRespuesta(
+                id=evento.id,
+                alerta_encuesta_id=evento.alerta_encuesta_id,
+                nivel_alerta=nivel_alerta,
+                descripcion=evento.descripcion,
+                cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
+                latitud=latitud,
+                longitud=longitud,
+                provincia=evento.provincia,
+                canton=evento.canton,
+                parroquia=evento.parroquia,
+                fecha_reporte=_formatear_fecha_reporte(evento.fecha_reporte),
+            )
+        )
+    if hubo_ubicaciones_actualizadas:
+        db.commit()
     reporte = ReporteAlertaRespuesta(
         tipo_alerta_id=tipo_alerta.id,
         nombre_alerta=tipo_alerta.descripcion,
         total=sum(opcion.cantidad for opcion in opciones),
         opciones=opciones,
+        eventos=eventos,
         chart_url="",
     )
     return reporte.model_copy(update={"chart_url": _crear_url_grafico_reporte_alerta(reporte)})
@@ -3671,6 +3716,13 @@ def registrar_respuesta_barrido(
     tags=["barridos"],
     summary="Listar todas las respuestas de barridos",
 )
+@router.get(
+    "/reportes/barridos",
+    response_model=list[BarridoRespuestaDetalle],
+    tags=["reportes"],
+    summary="Reporte de todos los barridos",
+    description="Devuelve el reporte de todos los barridos registrados.",
+)
 def listar_respuestas_barridos(
     db: Session = Depends(get_db),
 ) -> list[BarridoRespuestaDetalle]:
@@ -3732,6 +3784,7 @@ def listar_respuestas_barridos(
                 cantidad_personas_riesgo=int(respuesta_barrido.cantidad_personas_riesgo or 0),
                 latitud=latitud,
                 longitud=longitud,
+                ubicacion=f"{latitud},{longitud}",
                 provincia=respuesta_barrido.provincia,
                 canton=respuesta_barrido.canton,
                 parroquia=respuesta_barrido.parroquia,
@@ -3786,8 +3839,9 @@ def obtener_reporte_barrido(
 @router.get(
     "/eventos",
     response_model=list[EventoRespuesta],
-    tags=["eventos"],
-    summary="Listar reportes de eventos",
+    tags=["reportes"],
+    summary="Reporte de todas las alertas",
+    description="Devuelve el reporte de todas las alertas registradas.",
 )
 def listar_eventos(
     request: Request,
@@ -3828,6 +3882,7 @@ def listar_eventos(
                 cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
                 latitud=latitud,
                 longitud=longitud,
+                ubicacion=f"{latitud},{longitud}",
                 provincia=evento.provincia,
                 canton=evento.canton,
                 parroquia=evento.parroquia,

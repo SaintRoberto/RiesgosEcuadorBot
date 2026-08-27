@@ -477,6 +477,7 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/barridos" not in paths
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
+    assert "/api/telegram/reportes/barridos" in paths
     assert "/api/telegram/reportes/alertas/{tipo_alerta_id}" in paths
     assert "/api/telegram/reportes/barridos/tipo-alerta/{tipo_alerta_id}" in paths
     assert "/api/telegram/reportes/tipo-alerta/{tipo_alerta_id}/barridos/{barrido_id}" in paths
@@ -492,6 +493,13 @@ def test_flujos_telegram_en_swagger() -> None:
     assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
     assert "/api/telegram/eventos/seguimientos" in paths
+
+    reporte_eventos = paths["/api/telegram/eventos"]["get"]
+    assert "reportes" in reporte_eventos["tags"]
+    assert reporte_eventos["summary"] == "Reporte de todas las alertas"
+    reporte_barridos = paths["/api/telegram/reportes/barridos"]["get"]
+    assert "reportes" in reporte_barridos["tags"]
+    assert reporte_barridos["summary"] == "Reporte de todos los barridos"
 
 
 def test_admin_telegram_user_ids_requiere_env_con_corchetes() -> None:
@@ -1853,6 +1861,16 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         assert data["total"] == 1
         cantidades = {item["nombre"]: item["cantidad"] for item in data["opciones"]}
         assert cantidades["NIVEL TEST"] == 1
+        assert len(data["eventos"]) == 1
+        evento = data["eventos"][0]
+        assert evento["alerta_encuesta_id"] == alerta_encuesta_id
+        assert evento["nivel_alerta"] == "NIVEL TEST"
+        assert evento["descripcion"] == "Alerta de prueba"
+        assert evento["latitud"] == -0.1806532
+        assert evento["longitud"] == -78.4678382
+        assert evento["provincia"] == "Pichincha"
+        assert evento["canton"] == "Quito"
+        assert evento["parroquia"] == "Inaquito"
         assert data["chart_url"].startswith("https://quickchart.io/chart?")
 
         reporte_barrido = client.get(f"/api/telegram/reportes/barridos/tipo-alerta/{tipo_alerta_id}")
@@ -1885,6 +1903,14 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         assert respuesta_item["contacto_id"] == contacto_id
         assert respuesta_item["latitud"] == -0.1806532
         assert respuesta_item["longitud"] == -78.4678382
+        assert respuesta_item["ubicacion"] == "-0.1806532,-78.4678382"
+
+        reporte_todos_barridos = client.get("/api/telegram/reportes/barridos")
+        assert reporte_todos_barridos.status_code == 200
+        reporte_barrido_item = next(
+            item for item in reporte_todos_barridos.json() if item["barrido_id"] == barrido_id
+        )
+        assert reporte_barrido_item["ubicacion"] == "-0.1806532,-78.4678382"
         assert respuesta_item["provincia"] == "Pichincha"
         assert respuesta_item["canton"] == "Quito"
         assert respuesta_item["parroquia"] == "Inaquito"
@@ -2592,6 +2618,7 @@ def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados(monkeypatch
         assert item["nombre_alerta"] == "LLUVIAS"
         assert item["descripcion"] == "Lluvia fuerte en la comunidad."
         assert item["cantidad_personas_riesgo"] == 15
+        assert item["ubicacion"] == "-0.1806532,-78.4678382"
         assert item["provincia"] == "Guayas"
         assert item["canton"] == "Guayaquil"
         assert item["parroquia"] == "Tarqui"

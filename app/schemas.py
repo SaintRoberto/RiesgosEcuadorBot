@@ -134,6 +134,7 @@ class BarridoRespuestaDetalle(BaseModel):
     cantidad_personas_riesgo: int
     latitud: float
     longitud: float
+    ubicacion: str
     provincia: str | None = None
     canton: str | None = None
     parroquia: str | None = None
@@ -148,6 +149,20 @@ class ReporteAlertaOpcionRespuesta(BaseModel):
     cantidad: int
 
 
+class ReporteAlertaEventoRespuesta(BaseModel):
+    id: int
+    alerta_encuesta_id: int | None = None
+    nivel_alerta: str | None = None
+    descripcion: str
+    cantidad_personas_riesgo: int
+    latitud: float
+    longitud: float
+    provincia: str | None = None
+    canton: str | None = None
+    parroquia: str | None = None
+    fecha_reporte: str
+
+
 class ReporteAlertaRespuesta(BaseModel):
     barrido_id: int | None = None
     tipo_alerta_id: int
@@ -155,6 +170,7 @@ class ReporteAlertaRespuesta(BaseModel):
     fecha_barrido: str | None = None
     total: int
     opciones: list[ReporteAlertaOpcionRespuesta]
+    eventos: list[ReporteAlertaEventoRespuesta] = Field(default_factory=list)
     chart_url: str
 
 
@@ -176,6 +192,7 @@ class EventoRespuesta(BaseModel):
     cantidad_personas_riesgo: int
     latitud: float
     longitud: float
+    ubicacion: str
     provincia: str | None = None
     canton: str | None = None
     parroquia: str | None = None
