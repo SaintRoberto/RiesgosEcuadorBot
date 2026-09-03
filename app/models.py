@@ -31,8 +31,8 @@ class TelegramContacto(Base):
     )
 
 
-class TipoAlerta(Base):
-    __tablename__ = "tipo_alertas"
+class TipoMonitoreoAlerta(Base):
+    __tablename__ = "tipo_monitoreo_alertas"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     descripcion: Mapped[str] = mapped_column(String(150), nullable=False, unique=True)
@@ -44,8 +44,8 @@ class TipoAlerta(Base):
     )
 
 
-class TipoFlujo(Base):
-    __tablename__ = "tipo_flujo"
+class TipoMonitoreoFlujo(Base):
+    __tablename__ = "tipo_monitoreo_flujo"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     codigo: Mapped[str] = mapped_column(String(30), nullable=False, unique=True)
@@ -58,23 +58,29 @@ class TipoFlujo(Base):
     )
 
 
-class AlertaEncuesta(Base):
-    __tablename__ = "alerta_encuesta"
+class MonitoreoOpcion(Base):
+    __tablename__ = "monitoreo_opciones"
     __table_args__ = (
-        Index("idx_alerta_encuesta_tipo_alerta", "tipo_alerta_id"),
-        Index("idx_alerta_encuesta_tipo_flujo", "tipo_flujo_id"),
-        Index("uq_alerta_encuesta_tipo_flujo_orden", "tipo_alerta_id", "tipo_flujo_id", "orden", unique=True),
+        Index("idx_monitoreo_opciones_tipo_alerta", "tipo_monitoreo_alerta_id"),
+        Index("idx_monitoreo_opciones_tipo_flujo", "tipo_monitoreo_flujo_id"),
+        Index(
+            "uq_monitoreo_opciones_tipo_flujo_orden",
+            "tipo_monitoreo_alerta_id",
+            "tipo_monitoreo_flujo_id",
+            "orden",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    tipo_alerta_id: Mapped[int] = mapped_column(
+    tipo_monitoreo_alerta_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("tipo_alertas.id", name="fk_alerta_encuesta_tipo_alerta"),
+        ForeignKey("tipo_monitoreo_alertas.id", name="fk_monitoreo_opciones_tipo_alerta"),
         nullable=False,
     )
-    tipo_flujo_id: Mapped[int] = mapped_column(
+    tipo_monitoreo_flujo_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("tipo_flujo.id", name="fk_alerta_encuesta_tipo_flujo"),
+        ForeignKey("tipo_monitoreo_flujo.id", name="fk_monitoreo_opciones_tipo_flujo"),
         nullable=False,
     )
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
@@ -89,17 +95,22 @@ class AlertaEncuesta(Base):
     )
 
 
-class AlertaRecomendacion(Base):
-    __tablename__ = "alerta_recomendaciones"
+class MonitoreoRecomendacion(Base):
+    __tablename__ = "monitoreo_recomendaciones"
     __table_args__ = (
-        Index("idx_alerta_recomendaciones_tipo_alerta", "tipo_alerta_id"),
-        Index("uq_alerta_recomendaciones_tipo_orden", "tipo_alerta_id", "orden", unique=True),
+        Index("idx_monitoreo_recomendaciones_tipo_alerta", "tipo_monitoreo_alerta_id"),
+        Index(
+            "uq_monitoreo_recomendaciones_tipo_orden",
+            "tipo_monitoreo_alerta_id",
+            "orden",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    tipo_alerta_id: Mapped[int] = mapped_column(
+    tipo_monitoreo_alerta_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("tipo_alertas.id", name="fk_alerta_recomendaciones_tipo_alerta"),
+        ForeignKey("tipo_monitoreo_alertas.id", name="fk_monitoreo_recomendaciones_tipo_alerta"),
         nullable=False,
     )
     recomendacion: Mapped[str] = mapped_column(Text, nullable=False)
@@ -115,14 +126,14 @@ class AlertaRecomendacion(Base):
 class TelegramBarrido(Base):
     __tablename__ = "telegram_barridos"
     __table_args__ = (
-        Index("idx_telegram_barridos_tipo_alerta", "tipo_alerta_id"),
+        Index("idx_telegram_barridos_tipo_monitoreo_alerta", "tipo_monitoreo_alerta_id"),
         Index("idx_telegram_barridos_fecha", "fecha_barrido"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    tipo_alerta_id: Mapped[int] = mapped_column(
+    tipo_monitoreo_alerta_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("tipo_alertas.id", name="fk_telegram_barridos_tipo_alerta"),
+        ForeignKey("tipo_monitoreo_alertas.id", name="fk_telegram_barridos_tipo_monitoreo_alerta"),
         nullable=False,
     )
     codigo: Mapped[str | None] = mapped_column(String(150))
@@ -147,7 +158,7 @@ class TelegramBarridoRespuesta(Base):
         CheckConstraint("longitud >= -180 AND longitud <= 180", name="chk_telegram_barrido_respuestas_longitud"),
         Index("idx_telegram_barrido_respuestas_barrido", "barrido_id"),
         Index("idx_telegram_barrido_respuestas_contacto", "contacto_id"),
-        Index("idx_telegram_barrido_respuestas_alerta_encuesta", "alerta_encuesta_id"),
+        Index("idx_telegram_barrido_respuestas_monitoreo_opcion", "monitoreo_opcion_id"),
         Index("uq_telegram_barrido_respuesta_contacto", "barrido_id", "contacto_id", unique=True),
     )
 
@@ -162,9 +173,9 @@ class TelegramBarridoRespuesta(Base):
         ForeignKey("telegram_contactos.id", name="fk_telegram_barrido_respuestas_contacto"),
         nullable=False,
     )
-    alerta_encuesta_id: Mapped[int] = mapped_column(
+    monitoreo_opcion_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("alerta_encuesta.id", name="fk_telegram_barrido_respuestas_alerta_encuesta"),
+        ForeignKey("monitoreo_opciones.id", name="fk_telegram_barrido_respuestas_monitoreo_opcion"),
         nullable=False,
     )
     latitud: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
@@ -199,8 +210,8 @@ class TelegramEvento(Base):
             "cantidad_personas_riesgo >= 0 AND cantidad_personas_riesgo <= 999999",
             name="chk_telegram_eventos_cantidad_personas_riesgo",
         ),
-        Index("idx_telegram_eventos_tipo_alerta", "tipo_alerta_id"),
-        Index("idx_telegram_eventos_alerta_encuesta", "alerta_encuesta_id"),
+        Index("idx_telegram_eventos_tipo_monitoreo_alerta", "tipo_monitoreo_alerta_id"),
+        Index("idx_telegram_eventos_monitoreo_opcion", "monitoreo_opcion_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
@@ -209,13 +220,13 @@ class TelegramEvento(Base):
         ForeignKey("telegram_contactos.id", name="fk_telegram_eventos_contacto"),
         nullable=False,
     )
-    tipo_alerta_id: Mapped[int | None] = mapped_column(
+    tipo_monitoreo_alerta_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey("tipo_alertas.id", name="fk_telegram_eventos_tipo_alerta"),
+        ForeignKey("tipo_monitoreo_alertas.id", name="fk_telegram_eventos_tipo_monitoreo_alerta"),
     )
-    alerta_encuesta_id: Mapped[int | None] = mapped_column(
+    monitoreo_opcion_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey("alerta_encuesta.id", name="fk_telegram_eventos_alerta_encuesta"),
+        ForeignKey("monitoreo_opciones.id", name="fk_telegram_eventos_monitoreo_opcion"),
     )
     descripcion: Mapped[str] = mapped_column(Text, nullable=False)
     personas_en_riesgo: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
@@ -240,29 +251,31 @@ class TelegramEvento(Base):
     foto_file_unique_id: Mapped[str | None] = mapped_column(Text)
 
 
-class TelegramConsulta(Base):
-    __tablename__ = "telegram_consultas"
+class TelegramInteraccion(Base):
+    """Bitacora y estado transitorio de los flujos atendidos por el bot."""
+
+    __tablename__ = "telegram_interacciones"
     __table_args__ = (
         CheckConstraint(
             "estado IN ('PENDIENTE', 'PROCESANDO', 'COMPLETADA', 'ERROR')",
-            name="chk_telegram_consultas_estado",
+            name="chk_telegram_interacciones_estado",
         ),
-        Index("idx_telegram_consultas_contacto", "contacto_id"),
-        Index("idx_telegram_consultas_codigo", "codigo"),
-        Index("idx_telegram_consultas_fecha", "fecha_consulta"),
-        Index("idx_telegram_consultas_parametros", "parametros", postgresql_using="gin"),
+        Index("idx_telegram_interacciones_contacto", "contacto_id"),
+        Index("idx_telegram_interacciones_codigo", "codigo"),
+        Index("idx_telegram_interacciones_fecha", "fecha_interaccion"),
+        Index("idx_telegram_interacciones_parametros", "parametros", postgresql_using="gin"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     contacto_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("telegram_contactos.id", name="fk_telegram_consultas_contacto"),
+        ForeignKey("telegram_contactos.id", name="fk_telegram_interacciones_contacto"),
         nullable=False,
     )
     usuario_id: Mapped[int | None] = mapped_column(BigInteger)
-    tipo_consulta: Mapped[str] = mapped_column(String(50), nullable=False)
+    tipo_interaccion: Mapped[str] = mapped_column(String(50), nullable=False)
     codigo: Mapped[str | None] = mapped_column(String(150))
-    consulta: Mapped[str | None] = mapped_column(Text)
+    mensaje: Mapped[str | None] = mapped_column(Text)
     parametros: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,
@@ -277,7 +290,7 @@ class TelegramConsulta(Base):
         server_default=text("'PENDIENTE'"),
     )
     mensaje_error: Mapped[str | None] = mapped_column(Text)
-    fecha_consulta: Mapped[datetime] = mapped_column(
+    fecha_interaccion: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),

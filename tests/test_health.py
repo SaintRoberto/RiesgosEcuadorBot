@@ -14,7 +14,7 @@ def test_health() -> None:
 def test_endpoint_consultas_no_esta_publicado() -> None:
     response = TestClient(app).post(
         "/api/consultas",
-        json={"contacto_id": 1, "tipo_consulta": "RIESGO"},
+        json={"contacto_id": 1, "tipo_interaccion": "RIESGO"},
     )
 
     assert response.status_code == 404

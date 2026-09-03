@@ -19,7 +19,7 @@ class CrearBoletinRequest(BaseModel):
 
 class SolicitarBarridoRequest(BaseModel):
     telefonos: list[str] = Field(..., min_length=1, examples=[["+593987223658"]])
-    tipo_alerta_id: int = Field(default=6, examples=[6])
+    tipo_monitoreo_alerta_id: int = Field(default=6, examples=[6])
     fecha_barrido: date | None = None
     codigo: str | None = Field(default=None, max_length=150)
     mensaje: str | None = Field(default=None, max_length=500)
@@ -28,7 +28,7 @@ class SolicitarBarridoRequest(BaseModel):
 
 class RegistrarBarridoRequest(BaseModel):
     telefono: str = Field(..., examples=["+593987223658"])
-    alerta_encuesta_id: int = Field(..., examples=[16])
+    monitoreo_opcion_id: int = Field(..., examples=[16])
     latitud: float = Field(..., ge=-90, le=90, examples=[-0.1806532])
     longitud: float = Field(..., ge=-180, le=180, examples=[-78.4678382])
     codigo: str | None = Field(default=None, max_length=150)
@@ -47,23 +47,23 @@ class CrearSeguimientoEventoRequest(BaseModel):
     usuario_id: int | None = None
 
 
-class TipoAlertaRespuesta(BaseModel):
+class TipoMonitoreoAlertaRespuesta(BaseModel):
     id: int
     descripcion: str
     activo: bool
 
 
-class TipoFlujoRespuesta(BaseModel):
+class TipoMonitoreoFlujoRespuesta(BaseModel):
     id: int
     codigo: str
     descripcion: str
     activo: bool
 
 
-class AlertaEncuestaRespuesta(BaseModel):
+class MonitoreoOpcionRespuesta(BaseModel):
     id: int
-    tipo_alerta_id: int
-    tipo_flujo_id: int
+    tipo_monitoreo_alerta_id: int
+    tipo_monitoreo_flujo_id: int
     nombre: str
     descripcion: str | None
     color: str | None
@@ -71,9 +71,9 @@ class AlertaEncuestaRespuesta(BaseModel):
     activo: bool
 
 
-class AlertaRecomendacionRespuesta(BaseModel):
+class MonitoreoRecomendacionRespuesta(BaseModel):
     id: int
-    tipo_alerta_id: int
+    tipo_monitoreo_alerta_id: int
     recomendacion: str
     orden: int
     activo: bool
@@ -82,7 +82,7 @@ class AlertaRecomendacionRespuesta(BaseModel):
 class RegistroFlujoRespuesta(BaseModel):
     id: int
     telefono: str | None
-    tipo_consulta: str
+    tipo_interaccion: str
     codigo: str | None
     estado: str
 
@@ -101,16 +101,16 @@ class BarridoGuardadoRespuesta(BaseModel):
     telefono: str | None
     codigo: str | None
     estado: str
-    tipo_alerta_id: int
-    alerta_encuesta_id: int
+    tipo_monitoreo_alerta_id: int
+    monitoreo_opcion_id: int
     latitud: float
     longitud: float
 
 
 class BarridoResumenRespuesta(BaseModel):
     id: int
-    tipo_alerta_id: int
-    nombre_alerta: str | None = None
+    tipo_monitoreo_alerta_id: int
+    nombre_tipo_monitoreo_alerta: str | None = None
     codigo: str | None = None
     mensaje: str | None = None
     fecha_barrido: str
@@ -122,10 +122,10 @@ class BarridoRespuestaDetalle(BaseModel):
     id: int
     barrido_id: int
     fecha_barrido: str
-    tipo_alerta_id: int
-    nombre_alerta: str | None = None
-    alerta_encuesta_id: int
-    nivel_alerta: str | None = None
+    tipo_monitoreo_alerta_id: int
+    nombre_tipo_monitoreo_alerta: str | None = None
+    monitoreo_opcion_id: int
+    nombre_opcion_monitoreo: str | None = None
     contacto_id: int
     telefono: str | None = None
     nombres: str | None = None
@@ -142,7 +142,7 @@ class BarridoRespuestaDetalle(BaseModel):
 
 
 class ReporteAlertaOpcionRespuesta(BaseModel):
-    alerta_encuesta_id: int
+    monitoreo_opcion_id: int
     nombre: str
     descripcion: str | None = None
     color: str | None = None
@@ -151,8 +151,8 @@ class ReporteAlertaOpcionRespuesta(BaseModel):
 
 class ReporteAlertaEventoRespuesta(BaseModel):
     id: int
-    alerta_encuesta_id: int | None = None
-    nivel_alerta: str | None = None
+    monitoreo_opcion_id: int | None = None
+    nombre_opcion_monitoreo: str | None = None
     descripcion: str
     cantidad_personas_riesgo: int
     latitud: float
@@ -165,8 +165,8 @@ class ReporteAlertaEventoRespuesta(BaseModel):
 
 class ReporteAlertaRespuesta(BaseModel):
     barrido_id: int | None = None
-    tipo_alerta_id: int
-    nombre_alerta: str
+    tipo_monitoreo_alerta_id: int
+    nombre_tipo_monitoreo_alerta: str
     fecha_barrido: str | None = None
     total: int
     opciones: list[ReporteAlertaOpcionRespuesta]
@@ -185,9 +185,9 @@ class TelegramWebhookRespuesta(BaseModel):
 class EventoRespuesta(BaseModel):
     id: int
     contacto_id: int
-    tipo_alerta_id: int | None = None
-    nombre_alerta: str | None = None
-    alerta_encuesta_id: int | None = None
+    tipo_monitoreo_alerta_id: int | None = None
+    nombre_tipo_monitoreo_alerta: str | None = None
+    monitoreo_opcion_id: int | None = None
     descripcion: str
     cantidad_personas_riesgo: int
     latitud: float
@@ -203,8 +203,8 @@ class EventoRespuesta(BaseModel):
 class FotoEventoRespuesta(BaseModel):
     evento_id: int
     contacto_id: int
-    tipo_alerta_id: int | None = None
-    alerta_encuesta_id: int | None = None
+    tipo_monitoreo_alerta_id: int | None = None
+    monitoreo_opcion_id: int | None = None
     descripcion: str
     personas_en_riesgo: bool
     cantidad_personas_riesgo: int

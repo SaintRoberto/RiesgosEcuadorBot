@@ -35,7 +35,7 @@ Para una base nueva, crea la tabla con:
 alembic upgrade head
 ```
 
-Si `telegram_consultas` ya fue creada manualmente con el DDL del proyecto, registra la migración sin intentar recrearla:
+Si las tablas ya fueron creadas manualmente con el DDL del proyecto, registra las migraciones sin intentar recrearlas:
 
 ```powershell
 alembic stamp head
@@ -66,6 +66,19 @@ APP_ROOT_PATH=/riesgos-bot
 - `POST /api/telegram/barridos/solicitudes`: envia la solicitud diaria de barrido a contactos GAD y registra el resultado.
 - `POST /api/telegram/barridos/respuestas`: registra la respuesta del GAD con nivel de lluvia.
 - `POST /api/telegram/eventos/seguimientos`: envia el seguimiento de eventos adversos por Telegram, con marca opcional de respaldo por correo.
+- `GET /api/telegram/monitoreo/tipos-alerta`: lista los fenomenos configurados para monitoreo.
+- `GET /api/telegram/monitoreo/tipos-flujo`: lista los flujos `ALERTA`, `BARRIDO` y `AMBOS`.
+- `GET /api/telegram/monitoreo/opciones`: lista las opciones seleccionables de monitoreo.
+- `GET /api/telegram/monitoreo/recomendaciones`: lista las recomendaciones de monitoreo.
+
+## Modelo de monitoreo
+
+- `tipo_monitoreo_alertas`: catalogo de fenomenos como lluvias, sismos o incendios.
+- `tipo_monitoreo_flujo`: indica si una configuracion aplica a alertas, barridos o ambos.
+- `monitoreo_opciones`: opciones seleccionables para clasificar lo observado.
+- `monitoreo_recomendaciones`: recomendaciones asociadas a cada tipo de monitoreo.
+- `telegram_interacciones`: historial y estado transitorio de cada conversacion con el bot.
+- `telegram_barridos` y `telegram_barrido_respuestas`: cabeceras de barrido y respuestas terminadas.
 
 Los endpoints reciben telefonos, no IDs internos. Ejemplo:
 
@@ -80,7 +93,7 @@ Registro manual de respuesta de barrido:
 ```json
 {
   "telefono": "+593987223658",
-  "nivel_lluvia": "4",
+  "monitoreo_opcion_id": 16,
   "latitud": -0.1806532,
   "longitud": -78.4678382,
   "codigo": "BARRIDO-2026-07-17",
@@ -94,7 +107,7 @@ Registro automatico por webhook:
 1. El GAD comparte ubicacion en Telegram. El webhook guarda `message.location` como ubicacion pendiente.
 2. El bot responde pidiendo el nivel.
 3. El GAD responde `1`, `2`, `3` o `4`.
-4. El webhook crea el registro en `telegram_barridos`.
+4. El webhook crea el registro final en `telegram_barrido_respuestas`.
 
 Registro de contactos:
 

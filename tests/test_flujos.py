@@ -109,8 +109,8 @@ def _asegurar_tabla_eventos(session: Session) -> None:
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 contacto_id bigint NOT NULL,
-                tipo_alerta_id bigint,
-                alerta_encuesta_id bigint,
+                tipo_monitoreo_alerta_id bigint,
+                monitoreo_opcion_id bigint,
                 descripcion text NOT NULL,
                 personas_en_riesgo boolean NOT NULL DEFAULT false,
                 cantidad_personas_riesgo integer NOT NULL DEFAULT 0,
@@ -139,8 +139,8 @@ def _asegurar_tabla_eventos(session: Session) -> None:
             """
         )
     )
-    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS tipo_alerta_id bigint"))
-    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS alerta_encuesta_id bigint"))
+    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS tipo_monitoreo_alerta_id bigint"))
+    session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS monitoreo_opcion_id bigint"))
     session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS provincia character varying(150)"))
     session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS canton character varying(150)"))
     session.execute(text("ALTER TABLE public.telegram_eventos ADD COLUMN IF NOT EXISTS parroquia character varying(150)"))
@@ -164,15 +164,15 @@ def _asegurar_tablas_barridos(session: Session) -> None:
             CREATE TABLE public.telegram_barridos
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                tipo_alerta_id bigint NOT NULL,
+                tipo_monitoreo_alerta_id bigint NOT NULL,
                 codigo character varying(150),
                 mensaje text,
                 fecha_barrido timestamp with time zone NOT NULL DEFAULT now(),
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
-                CONSTRAINT fk_telegram_barridos_tipo_alerta
-                    FOREIGN KEY (tipo_alerta_id)
-                    REFERENCES public.tipo_alertas (id)
+                CONSTRAINT fk_telegram_barridos_tipo_monitoreo_alerta
+                    FOREIGN KEY (tipo_monitoreo_alerta_id)
+                    REFERENCES public.tipo_monitoreo_alertas (id)
                     ON UPDATE CASCADE
                     ON DELETE RESTRICT
             )
@@ -187,7 +187,7 @@ def _asegurar_tablas_barridos(session: Session) -> None:
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 barrido_id bigint NOT NULL,
                 contacto_id bigint NOT NULL,
-                alerta_encuesta_id bigint NOT NULL,
+                monitoreo_opcion_id bigint NOT NULL,
                 latitud numeric(10,7) NOT NULL,
                 longitud numeric(10,7) NOT NULL,
                 provincia character varying(150),
@@ -211,9 +211,9 @@ def _asegurar_tablas_barridos(session: Session) -> None:
                     REFERENCES public.telegram_contactos (id)
                     ON UPDATE CASCADE
                     ON DELETE RESTRICT,
-                CONSTRAINT fk_telegram_barrido_respuestas_alerta_encuesta
-                    FOREIGN KEY (alerta_encuesta_id)
-                    REFERENCES public.alerta_encuesta (id)
+                CONSTRAINT fk_telegram_barrido_respuestas_monitoreo_opcion
+                    FOREIGN KEY (monitoreo_opcion_id)
+                    REFERENCES public.monitoreo_opciones (id)
                     ON UPDATE CASCADE
                     ON DELETE RESTRICT,
                 CONSTRAINT chk_telegram_barrido_respuestas_latitud
@@ -228,17 +228,17 @@ def _asegurar_tablas_barridos(session: Session) -> None:
     )
 
 
-def _asegurar_tipo_alertas(session: Session) -> None:
+def _asegurar_tipo_monitoreo_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS public.tipo_alertas
+            CREATE TABLE IF NOT EXISTS public.tipo_monitoreo_alertas
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 descripcion varchar(150) NOT NULL,
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
-                CONSTRAINT uq_tipo_alertas_descripcion UNIQUE (descripcion)
+                CONSTRAINT uq_tipo_monitoreo_alertas_descripcion UNIQUE (descripcion)
             )
             """
         )
@@ -246,7 +246,7 @@ def _asegurar_tipo_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            INSERT INTO public.tipo_alertas (id, descripcion)
+            INSERT INTO public.tipo_monitoreo_alertas (id, descripcion)
             OVERRIDING SYSTEM VALUE
             VALUES
                 (1, 'CA\u00cdDA DE CENIZA'),
@@ -266,8 +266,8 @@ def _asegurar_tipo_alertas(session: Session) -> None:
         text(
             """
             SELECT setval(
-                pg_get_serial_sequence('public.tipo_alertas', 'id'),
-                (SELECT max(id) FROM public.tipo_alertas),
+                pg_get_serial_sequence('public.tipo_monitoreo_alertas', 'id'),
+                (SELECT max(id) FROM public.tipo_monitoreo_alertas),
                 true
             )
             """
@@ -276,11 +276,11 @@ def _asegurar_tipo_alertas(session: Session) -> None:
 
 
 def _asegurar_catalogos_alertas(session: Session) -> None:
-    _asegurar_tipo_alertas(session)
+    _asegurar_tipo_monitoreo_alertas(session)
     session.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS public.tipo_flujo
+            CREATE TABLE IF NOT EXISTS public.tipo_monitoreo_flujo
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 codigo varchar(30) NOT NULL UNIQUE,
@@ -294,7 +294,7 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            INSERT INTO public.tipo_flujo (id, codigo, descripcion)
+            INSERT INTO public.tipo_monitoreo_flujo (id, codigo, descripcion)
             OVERRIDING SYSTEM VALUE
             VALUES
                 (1, 'ALERTA', 'Reporte de alerta'),
@@ -310,67 +310,67 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS public.alerta_encuesta
+            CREATE TABLE IF NOT EXISTS public.monitoreo_opciones
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                tipo_alerta_id bigint NOT NULL,
-                tipo_flujo_id bigint NOT NULL DEFAULT 3,
+                tipo_monitoreo_alerta_id bigint NOT NULL,
+                tipo_monitoreo_flujo_id bigint NOT NULL DEFAULT 3,
                 nombre varchar(150) NOT NULL,
                 descripcion text,
                 color varchar(20),
                 orden integer NOT NULL,
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
-                CONSTRAINT fk_alerta_encuesta_tipo_alerta
-                    FOREIGN KEY (tipo_alerta_id)
-                    REFERENCES public.tipo_alertas (id),
-                CONSTRAINT fk_alerta_encuesta_tipo_flujo
-                    FOREIGN KEY (tipo_flujo_id)
-                    REFERENCES public.tipo_flujo (id),
-                CONSTRAINT uq_alerta_encuesta_tipo_flujo_orden
-                    UNIQUE (tipo_alerta_id, tipo_flujo_id, orden)
+                CONSTRAINT fk_monitoreo_opciones_tipo_alerta
+                    FOREIGN KEY (tipo_monitoreo_alerta_id)
+                    REFERENCES public.tipo_monitoreo_alertas (id),
+                CONSTRAINT fk_monitoreo_opciones_tipo_flujo
+                    FOREIGN KEY (tipo_monitoreo_flujo_id)
+                    REFERENCES public.tipo_monitoreo_flujo (id),
+                CONSTRAINT uq_monitoreo_opciones_tipo_flujo_orden
+                    UNIQUE (tipo_monitoreo_alerta_id, tipo_monitoreo_flujo_id, orden)
             )
             """
         )
     )
-    session.execute(text("ALTER TABLE public.alerta_encuesta ADD COLUMN IF NOT EXISTS color varchar(20)"))
-    session.execute(text("ALTER TABLE public.alerta_encuesta ADD COLUMN IF NOT EXISTS tipo_flujo_id bigint"))
+    session.execute(text("ALTER TABLE public.monitoreo_opciones ADD COLUMN IF NOT EXISTS color varchar(20)"))
+    session.execute(text("ALTER TABLE public.monitoreo_opciones ADD COLUMN IF NOT EXISTS tipo_monitoreo_flujo_id bigint"))
     session.execute(
         text(
             """
-            UPDATE public.alerta_encuesta
-            SET tipo_flujo_id = 3
-            WHERE tipo_flujo_id IS NULL
+            UPDATE public.monitoreo_opciones
+            SET tipo_monitoreo_flujo_id = 3
+            WHERE tipo_monitoreo_flujo_id IS NULL
             """
         )
     )
-    session.execute(text("ALTER TABLE public.alerta_encuesta ALTER COLUMN tipo_flujo_id SET NOT NULL"))
-    session.execute(text("ALTER TABLE public.alerta_encuesta DROP CONSTRAINT IF EXISTS uq_alerta_encuesta_tipo_orden"))
-    session.execute(text("DROP INDEX IF EXISTS public.uq_alerta_encuesta_tipo_orden"))
+    session.execute(text("ALTER TABLE public.monitoreo_opciones ALTER COLUMN tipo_monitoreo_flujo_id SET NOT NULL"))
+    session.execute(text("ALTER TABLE public.monitoreo_opciones DROP CONSTRAINT IF EXISTS uq_monitoreo_opciones_tipo_orden"))
+    session.execute(text("DROP INDEX IF EXISTS public.uq_monitoreo_opciones_tipo_orden"))
     session.execute(
         text(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_alerta_encuesta_tipo_flujo_orden
-                ON public.alerta_encuesta (tipo_alerta_id, tipo_flujo_id, orden)
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_monitoreo_opciones_tipo_flujo_orden
+                ON public.monitoreo_opciones (tipo_monitoreo_alerta_id, tipo_monitoreo_flujo_id, orden)
             """
         )
     )
     session.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS public.alerta_recomendaciones
+            CREATE TABLE IF NOT EXISTS public.monitoreo_recomendaciones
             (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                tipo_alerta_id bigint NOT NULL,
+                tipo_monitoreo_alerta_id bigint NOT NULL,
                 recomendacion text NOT NULL,
                 orden integer NOT NULL,
                 activo boolean NOT NULL DEFAULT true,
                 fecha_creacion timestamp with time zone NOT NULL DEFAULT now(),
-                CONSTRAINT fk_alerta_recomendaciones_tipo_alerta
-                    FOREIGN KEY (tipo_alerta_id)
-                    REFERENCES public.tipo_alertas (id),
-                CONSTRAINT uq_alerta_recomendaciones_tipo_orden
-                    UNIQUE (tipo_alerta_id, orden)
+                CONSTRAINT fk_monitoreo_recomendaciones_tipo_alerta
+                    FOREIGN KEY (tipo_monitoreo_alerta_id)
+                    REFERENCES public.tipo_monitoreo_alertas (id),
+                CONSTRAINT uq_monitoreo_recomendaciones_tipo_orden
+                    UNIQUE (tipo_monitoreo_alerta_id, orden)
             )
             """
         )
@@ -378,32 +378,32 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            UPDATE public.alerta_encuesta
+            UPDATE public.monitoreo_opciones
             SET activo = false
-            WHERE tipo_alerta_id IN (4, 6)
+            WHERE tipo_monitoreo_alerta_id IN (4, 6)
             """
         )
     )
     session.execute(
         text(
             """
-            UPDATE public.alerta_recomendaciones
+            UPDATE public.monitoreo_recomendaciones
             SET activo = false
-            WHERE tipo_alerta_id IN (4, 6)
+            WHERE tipo_monitoreo_alerta_id IN (4, 6)
             """
         )
     )
     session.execute(
         text(
             """
-            INSERT INTO public.alerta_encuesta (tipo_alerta_id, tipo_flujo_id, orden, nombre, descripcion, color)
+            INSERT INTO public.monitoreo_opciones (tipo_monitoreo_alerta_id, tipo_monitoreo_flujo_id, orden, nombre, descripcion, color)
             VALUES
                 (6, 3, 1, 'LLUVIA MUY FUERTE', 'Rapido anegamiento de calles.', 'rojo'),
                 (6, 3, 2, 'LLUVIA FUERTE', 'Poco anegamiento de calles que dificulta movilidad.', 'amarillo'),
                 (6, 3, 3, 'LLUVIA MODERADA', 'Visibilidad reducida y acumulacion leve de agua.', 'verde'),
                 (6, 2, 4, 'LLUVIA DEBIL', 'Precipitacion ligera sin acumulacion relevante.', 'verde'),
                 (4, 3, 1, 'MUY FUERTE', 'Panico general, personas pierden estabilidad.', 'rojo')
-            ON CONFLICT (tipo_alerta_id, tipo_flujo_id, orden) DO UPDATE
+            ON CONFLICT (tipo_monitoreo_alerta_id, tipo_monitoreo_flujo_id, orden) DO UPDATE
             SET nombre = EXCLUDED.nombre,
                 descripcion = EXCLUDED.descripcion,
                 color = EXCLUDED.color,
@@ -414,12 +414,12 @@ def _asegurar_catalogos_alertas(session: Session) -> None:
     session.execute(
         text(
             """
-            INSERT INTO public.alerta_recomendaciones (tipo_alerta_id, orden, recomendacion)
+            INSERT INTO public.monitoreo_recomendaciones (tipo_monitoreo_alerta_id, orden, recomendacion)
             VALUES
                 (6, 1, 'Evitar transitar en zonas inundadas.'),
                 (6, 2, 'No acercarse a postes, cables o arboles.'),
                 (4, 1, 'Conserve la calma.')
-            ON CONFLICT (tipo_alerta_id, orden) DO UPDATE
+            ON CONFLICT (tipo_monitoreo_alerta_id, orden) DO UPDATE
             SET recomendacion = EXCLUDED.recomendacion,
                 activo = true
             """
@@ -473,22 +473,26 @@ def test_flujos_telegram_en_swagger() -> None:
 
     assert "/api/telegram/webhook" in paths
     assert "/api/telegram/boletines" in paths
-    assert "/api/telegram/barridos/tipo-alerta/{tipo_alerta_id}" in paths
+    assert "/api/telegram/barridos/tipo-alerta/{tipo_monitoreo_alerta_id}" in paths
     assert "/api/telegram/barridos" not in paths
     assert "/api/telegram/barridos/solicitudes" in paths
     assert "/api/telegram/barridos/respuestas" in paths
     assert "/api/telegram/reportes/barridos" in paths
-    assert "/api/telegram/reportes/alertas/{tipo_alerta_id}" in paths
-    assert "/api/telegram/reportes/barridos/tipo-alerta/{tipo_alerta_id}" in paths
-    assert "/api/telegram/reportes/tipo-alerta/{tipo_alerta_id}/barridos/{barrido_id}" in paths
+    assert "/api/telegram/reportes/alertas/{tipo_monitoreo_alerta_id}" in paths
+    assert "/api/telegram/reportes/barridos/tipo-alerta/{tipo_monitoreo_alerta_id}" in paths
+    assert "/api/telegram/reportes/tipo-alerta/{tipo_monitoreo_alerta_id}/barridos/{barrido_id}" in paths
     assert "/api/telegram/reportes/barridos/{barrido_id}" not in paths
-    assert "/api/telegram/tipo-alertas" in paths
-    assert "/api/telegram/tipo-alertas/{tipo_alerta_id}" in paths
-    assert "/api/telegram/tipo-flujos" in paths
-    assert "/api/telegram/alerta-encuesta" in paths
-    assert "/api/telegram/tipo-alertas/{tipo_alerta_id}/encuesta" in paths
-    assert "/api/telegram/alerta-recomendaciones" in paths
-    assert "/api/telegram/tipo-alertas/{tipo_alerta_id}/recomendaciones" in paths
+    assert "/api/telegram/monitoreo/tipos-alerta" in paths
+    assert "/api/telegram/monitoreo/tipos-alerta/{tipo_monitoreo_alerta_id}" in paths
+    assert "/api/telegram/monitoreo/tipos-flujo" in paths
+    assert "/api/telegram/monitoreo/opciones" in paths
+    assert "/api/telegram/monitoreo/tipos-alerta/{tipo_monitoreo_alerta_id}/opciones" in paths
+    assert "/api/telegram/monitoreo/recomendaciones" in paths
+    assert "/api/telegram/monitoreo/tipos-alerta/{tipo_monitoreo_alerta_id}/recomendaciones" in paths
+    assert "/api/telegram/tipo-alertas" not in paths
+    assert "/api/telegram/tipo-flujos" not in paths
+    assert "/api/telegram/alerta-encuesta" not in paths
+    assert "/api/telegram/alerta-recomendaciones" not in paths
     assert "/api/telegram/eventos" in paths
     assert "/api/telegram/eventos/fotos" in paths
     assert "/api/telegram/eventos/{evento_id}/foto" in paths
@@ -522,7 +526,7 @@ def test_admin_telegram_user_ids_requiere_env_con_corchetes() -> None:
         flujos.get_settings = get_settings_original
 
 
-def test_endpoint_tipo_alertas_lista_catalogo() -> None:
+def test_endpoint_tipo_monitoreo_alertas_lista_catalogo() -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -536,7 +540,7 @@ def test_endpoint_tipo_alertas_lista_catalogo() -> None:
         app.dependency_overrides[get_db] = override_get_db
         client = TestClient(app)
 
-        respuesta = client.get("/api/telegram/tipo-alertas")
+        respuesta = client.get("/api/telegram/monitoreo/tipos-alerta")
 
         assert respuesta.status_code == 200
         data = respuesta.json()
@@ -544,7 +548,7 @@ def test_endpoint_tipo_alertas_lista_catalogo() -> None:
         assert data[0]["descripcion"] == "CA\u00cdDA DE CENIZA"
         assert data[5]["descripcion"] == "LLUVIAS"
 
-        detalle = client.get("/api/telegram/tipo-alertas/6")
+        detalle = client.get("/api/telegram/monitoreo/tipos-alerta/6")
         assert detalle.status_code == 200
         assert detalle.json()["descripcion"] == "LLUVIAS"
     finally:
@@ -568,7 +572,7 @@ def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
         app.dependency_overrides[get_db] = override_get_db
         client = TestClient(app)
 
-        encuesta = client.get("/api/telegram/tipo-alertas/6/encuesta")
+        encuesta = client.get("/api/telegram/monitoreo/tipos-alerta/6/opciones")
         assert encuesta.status_code == 200
         encuesta_data = encuesta.json()
         assert [item["nombre"] for item in encuesta_data] == [
@@ -577,11 +581,11 @@ def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
             "LLUVIA MODERADA",
         ]
         assert [item["color"] for item in encuesta_data] == ["rojo", "amarillo", "verde"]
-        assert all(item["tipo_flujo_id"] == 3 for item in encuesta_data)
+        assert all(item["tipo_monitoreo_flujo_id"] == 3 for item in encuesta_data)
 
         encuesta_barrido = client.get(
-            "/api/telegram/tipo-alertas/6/encuesta",
-            params={"tipo_flujo_codigo": "BARRIDO"},
+            "/api/telegram/monitoreo/tipos-alerta/6/opciones",
+            params={"tipo_monitoreo_flujo_codigo": "BARRIDO"},
         )
         assert encuesta_barrido.status_code == 200
         assert [item["nombre"] for item in encuesta_barrido.json()] == [
@@ -591,11 +595,11 @@ def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
             "LLUVIA DEBIL",
         ]
 
-        encuesta_filtrada = client.get("/api/telegram/alerta-encuesta", params={"tipo_alerta_id": 4})
+        encuesta_filtrada = client.get("/api/telegram/monitoreo/opciones", params={"tipo_monitoreo_alerta_id": 4})
         assert encuesta_filtrada.status_code == 200
         assert encuesta_filtrada.json()[0]["nombre"] == "MUY FUERTE"
 
-        recomendaciones = client.get("/api/telegram/tipo-alertas/6/recomendaciones")
+        recomendaciones = client.get("/api/telegram/monitoreo/tipos-alerta/6/recomendaciones")
         assert recomendaciones.status_code == 200
         recomendaciones_data = recomendaciones.json()
         assert [item["recomendacion"] for item in recomendaciones_data] == [
@@ -604,8 +608,8 @@ def test_endpoints_catalogos_alertas_filtran_por_tipo_alerta() -> None:
         ]
 
         recomendaciones_filtradas = client.get(
-            "/api/telegram/alerta-recomendaciones",
-            params={"tipo_alerta_id": 4},
+            "/api/telegram/monitoreo/recomendaciones",
+            params={"tipo_monitoreo_alerta_id": 4},
         )
         assert recomendaciones_filtradas.status_code == 200
         assert recomendaciones_filtradas.json()[0]["recomendacion"] == "Conserve la calma."
@@ -642,14 +646,14 @@ def test_flujo_boletin_barrido_y_seguimiento(monkeypatch) -> None:
         assert solicitud.status_code == 201
         assert solicitud.json()["barrido_id"] > 0
         assert solicitud.json()["registros"][0]["estado"] == "PROCESANDO"
-        alerta_encuesta_id = client.get("/api/telegram/alerta-encuesta?tipo_alerta_id=6").json()[0]["id"]
+        monitoreo_opcion_id = client.get("/api/telegram/monitoreo/opciones?tipo_monitoreo_alerta_id=6").json()[0]["id"]
 
         respuesta = client.post(
             "/api/telegram/barridos/respuestas",
             json={
                 "telefono": telefono,
                 "codigo": "BARRIDO-TEST",
-                "alerta_encuesta_id": alerta_encuesta_id,
+                "monitoreo_opcion_id": monitoreo_opcion_id,
                 "latitud": -0.1806532,
                 "longitud": -78.4678382,
                 "observacion": "Lluvia sostenida",
@@ -659,8 +663,8 @@ def test_flujo_boletin_barrido_y_seguimiento(monkeypatch) -> None:
         assert respuesta.json()["estado"] == "COMPLETADA"
         assert respuesta.json()["barrido_id"] > 0
         assert respuesta.json()["barrido_respuesta_id"] > 0
-        assert respuesta.json()["tipo_alerta_id"] == 6
-        assert respuesta.json()["alerta_encuesta_id"] == alerta_encuesta_id
+        assert respuesta.json()["tipo_monitoreo_alerta_id"] == 6
+        assert respuesta.json()["monitoreo_opcion_id"] == monitoreo_opcion_id
 
         seguimiento = client.post(
             "/api/telegram/eventos/seguimientos",
@@ -682,7 +686,7 @@ def test_webhook_registra_contacto_con_telefono() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
-        _asegurar_tipo_alertas(session)
+        _asegurar_tipo_monitoreo_alertas(session)
         flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
         session.execute(
             text(
@@ -778,7 +782,7 @@ def test_webhook_registra_telefono_con_espacios_y_formato_local() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
-        _asegurar_tipo_alertas(session)
+        _asegurar_tipo_monitoreo_alertas(session)
         flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
         session.execute(
             text(
@@ -853,7 +857,7 @@ def test_webhook_hola_no_activa_registro_de_telefono() -> None:
     chat_id = -(uuid4().int % 1000000000)
 
     try:
-        _asegurar_tipo_alertas(session)
+        _asegurar_tipo_monitoreo_alertas(session)
         flujos.REGISTROS_TELEFONO_PENDIENTES.clear()
 
         def override_get_db() -> Generator[Session, None, None]:
@@ -1023,7 +1027,7 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta(monkeypatch) -> None:
                     ae.nombre AS nivel,
                     br.latitud,
                     br.longitud,
-                    b.tipo_alerta_id,
+                    b.tipo_monitoreo_alerta_id,
                     br.descripcion,
                     br.personas_en_riesgo,
                     br.cantidad_personas_riesgo,
@@ -1034,14 +1038,14 @@ def test_webhook_guarda_barrido_con_ubicacion_y_encuesta(monkeypatch) -> None:
                 FROM telegram_barrido_respuestas br
                 JOIN telegram_barridos b ON b.id = br.barrido_id
                 JOIN telegram_contactos c ON c.id = br.contacto_id
-                JOIN alerta_encuesta ae ON ae.id = br.alerta_encuesta_id
+                JOIN monitoreo_opciones ae ON ae.id = br.monitoreo_opcion_id
                 WHERE c.telefono = :telefono
                 """
             ),
             {"telefono": telefono},
         ).mappings().one()
         assert row["nivel"] == "LLUVIA FUERTE"
-        assert row["tipo_alerta_id"] == 6
+        assert row["tipo_monitoreo_alerta_id"] == 6
         assert float(row["latitud"]) == -0.1806532
         assert float(row["longitud"]) == -78.4678382
         assert row["descripcion"] == "Comunidad San Jose, lluvia fuerte con acumulacion de agua."
@@ -1348,10 +1352,10 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta(monkeypatch) -> None:
             text(
                 """
                 SELECT
-                    e.tipo_alerta_id,
+                    e.tipo_monitoreo_alerta_id,
                     t.descripcion AS tipo_alerta,
-                    e.alerta_encuesta_id,
-                    ae.nombre AS nivel_alerta,
+                    e.monitoreo_opcion_id,
+                    ae.nombre AS nombre_opcion_monitoreo,
                     e.descripcion,
                     e.personas_en_riesgo,
                     e.cantidad_personas_riesgo,
@@ -1361,17 +1365,17 @@ def test_webhook_reporte_alerta_completo_desde_tipo_alerta(monkeypatch) -> None:
                     e.canton,
                     e.parroquia
                 FROM telegram_eventos e
-                LEFT JOIN tipo_alertas t ON t.id = e.tipo_alerta_id
-                LEFT JOIN alerta_encuesta ae ON ae.id = e.alerta_encuesta_id
+                LEFT JOIN tipo_monitoreo_alertas t ON t.id = e.tipo_monitoreo_alerta_id
+                LEFT JOIN monitoreo_opciones ae ON ae.id = e.monitoreo_opcion_id
                 WHERE e.contacto_id = :contacto_id
                 """
             ),
             {"contacto_id": foto.json()["contacto_id"]},
         ).mappings().one()
-        assert evento["tipo_alerta_id"] == 6
+        assert evento["tipo_monitoreo_alerta_id"] == 6
         assert evento["tipo_alerta"] == "LLUVIAS"
-        assert evento["alerta_encuesta_id"] is not None
-        assert evento["nivel_alerta"] == "LLUVIA FUERTE"
+        assert evento["monitoreo_opcion_id"] is not None
+        assert evento["nombre_opcion_monitoreo"] == "LLUVIA FUERTE"
         assert evento["descripcion"] == "Comunidad San Jose, lluvia fuerte con acumulacion de agua."
         assert evento["personas_en_riesgo"] is True
         assert evento["cantidad_personas_riesgo"] == 25
@@ -1498,10 +1502,10 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
             text(
                 """
                 SELECT count(*)
-                FROM telegram_consultas tc
+                FROM telegram_interacciones tc
                 JOIN telegram_contactos c ON c.id = tc.contacto_id
                 WHERE c.telefono IN (:telefono_admin, :telefono_1, :telefono_2)
-                  AND tc.tipo_consulta = 'BARRIDO_GAD'
+                  AND tc.tipo_interaccion = 'BARRIDO_GAD'
                   AND tc.estado = 'PROCESANDO'
                   AND tc.codigo = 'BARRIDO-AUTO'
                 """
@@ -1518,10 +1522,10 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
             text(
                 """
                 SELECT count(DISTINCT (tc.parametros->>'barrido_id')::bigint)
-                FROM telegram_consultas tc
+                FROM telegram_interacciones tc
                 JOIN telegram_contactos c ON c.id = tc.contacto_id
                 WHERE c.telefono IN (:telefono_admin, :telefono_1, :telefono_2)
-                  AND tc.tipo_consulta = 'BARRIDO_GAD'
+                  AND tc.tipo_interaccion = 'BARRIDO_GAD'
                   AND tc.codigo = 'BARRIDO-AUTO'
                 """
             ),
@@ -1537,10 +1541,10 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
             text(
                 """
                 SELECT count(*)
-                FROM telegram_consultas tc
+                FROM telegram_interacciones tc
                 JOIN telegram_contactos c ON c.id = tc.contacto_id
                 WHERE c.telefono = :telefono
-                  AND tc.tipo_consulta = 'BARRIDO_GAD'
+                  AND tc.tipo_interaccion = 'BARRIDO_GAD'
                 """
             ),
             {"telefono": telefono_sin_telegram},
@@ -1692,7 +1696,7 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta(monkeypatch) -> 
             text(
                 """
                 SELECT
-                    b.tipo_alerta_id,
+                    b.tipo_monitoreo_alerta_id,
                     ae.nombre,
                     br.descripcion,
                     br.foto_file_id,
@@ -1701,14 +1705,14 @@ def test_barrido_por_tipo_alerta_lanza_misma_encuesta_de_alerta(monkeypatch) -> 
                     br.parroquia
                 FROM telegram_barrido_respuestas br
                 JOIN telegram_barridos b ON b.id = br.barrido_id
-                JOIN alerta_encuesta ae ON ae.id = br.alerta_encuesta_id
+                JOIN monitoreo_opciones ae ON ae.id = br.monitoreo_opcion_id
                 JOIN telegram_contactos c ON c.id = br.contacto_id
                 WHERE c.telefono = :telefono
                 """
             ),
             {"telefono": telefono},
         ).mappings().one()
-        assert row["tipo_alerta_id"] == 4
+        assert row["tipo_monitoreo_alerta_id"] == 4
         assert row["nombre"] == "MUY FUERTE"
         assert row["descripcion"] == "Comunidad Centro, sismo fuerte sin danos visibles."
         assert row["foto_file_id"] == "foto-sismo"
@@ -1740,27 +1744,27 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         _asegurar_tablas_barridos(session)
         _asegurar_tabla_eventos(session)
         tipo_alerta_nombre = f"ALERTA TEST {uuid4().hex[:8]}"
-        tipo_alerta_id = session.execute(
+        tipo_monitoreo_alerta_id = session.execute(
             text(
                 """
-                INSERT INTO tipo_alertas (descripcion, activo)
+                INSERT INTO tipo_monitoreo_alertas (descripcion, activo)
                 VALUES (:descripcion, true)
                 RETURNING id
                 """
             ),
             {"descripcion": tipo_alerta_nombre},
         ).scalar_one()
-        alerta_encuesta_id = session.execute(
+        monitoreo_opcion_id = session.execute(
             text(
                 """
-                INSERT INTO alerta_encuesta
-                    (tipo_alerta_id, tipo_flujo_id, nombre, descripcion, color, orden, activo)
+                INSERT INTO monitoreo_opciones
+                    (tipo_monitoreo_alerta_id, tipo_monitoreo_flujo_id, nombre, descripcion, color, orden, activo)
                 VALUES
-                    (:tipo_alerta_id, 3, 'NIVEL TEST', 'Nivel de prueba', 'verde', 1, true)
+                    (:tipo_monitoreo_alerta_id, 3, 'NIVEL TEST', 'Nivel de prueba', 'verde', 1, true)
                 RETURNING id
                 """
             ),
-            {"tipo_alerta_id": tipo_alerta_id},
+            {"tipo_monitoreo_alerta_id": tipo_monitoreo_alerta_id},
         ).scalar_one()
         contacto_id = session.execute(
             text(
@@ -1777,12 +1781,12 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         barrido_id = session.execute(
             text(
                 """
-                INSERT INTO telegram_barridos (tipo_alerta_id, codigo, mensaje)
-                VALUES (:tipo_alerta_id, 'BARRIDO-REPORTE', 'Reporte de prueba')
+                INSERT INTO telegram_barridos (tipo_monitoreo_alerta_id, codigo, mensaje)
+                VALUES (:tipo_monitoreo_alerta_id, 'BARRIDO-REPORTE', 'Reporte de prueba')
                 RETURNING id
                 """
             ),
-            {"tipo_alerta_id": tipo_alerta_id},
+            {"tipo_monitoreo_alerta_id": tipo_monitoreo_alerta_id},
         ).scalar_one()
         session.execute(
             text(
@@ -1791,7 +1795,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
                     (
                         barrido_id,
                         contacto_id,
-                        alerta_encuesta_id,
+                        monitoreo_opcion_id,
                         latitud,
                         longitud,
                         provincia,
@@ -1802,7 +1806,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
                     (
                         :barrido_id,
                         :contacto_id,
-                        :alerta_encuesta_id,
+                        :monitoreo_opcion_id,
                         -0.1806532,
                         -78.4678382,
                         'Pichincha',
@@ -1811,7 +1815,7 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
                     )
                 """
             ),
-            {"barrido_id": barrido_id, "contacto_id": contacto_id, "alerta_encuesta_id": alerta_encuesta_id},
+            {"barrido_id": barrido_id, "contacto_id": contacto_id, "monitoreo_opcion_id": monitoreo_opcion_id},
         )
         session.execute(
             text(
@@ -1819,8 +1823,8 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
                 INSERT INTO telegram_eventos
                     (
                         contacto_id,
-                        tipo_alerta_id,
-                        alerta_encuesta_id,
+                        tipo_monitoreo_alerta_id,
+                        monitoreo_opcion_id,
                         descripcion,
                         foto_file_id,
                         latitud,
@@ -1829,8 +1833,8 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
                 VALUES
                     (
                         :contacto_id,
-                        :tipo_alerta_id,
-                        :alerta_encuesta_id,
+                        :tipo_monitoreo_alerta_id,
+                        :monitoreo_opcion_id,
                         'Alerta de prueba',
                         'foto-alerta',
                         -0.1806532,
@@ -1840,8 +1844,8 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
             ),
             {
                 "contacto_id": contacto_id,
-                "tipo_alerta_id": tipo_alerta_id,
-                "alerta_encuesta_id": alerta_encuesta_id,
+                "tipo_monitoreo_alerta_id": tipo_monitoreo_alerta_id,
+                "monitoreo_opcion_id": monitoreo_opcion_id,
             },
         )
 
@@ -1851,20 +1855,20 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         app.dependency_overrides[get_db] = override_get_db
         client = TestClient(app)
 
-        respuesta = client.get(f"/api/telegram/reportes/alertas/{tipo_alerta_id}")
+        respuesta = client.get(f"/api/telegram/reportes/alertas/{tipo_monitoreo_alerta_id}")
 
         assert respuesta.status_code == 200
         data = respuesta.json()
         assert data["barrido_id"] is None
-        assert data["tipo_alerta_id"] == tipo_alerta_id
-        assert data["nombre_alerta"] == tipo_alerta_nombre
+        assert data["tipo_monitoreo_alerta_id"] == tipo_monitoreo_alerta_id
+        assert data["nombre_tipo_monitoreo_alerta"] == tipo_alerta_nombre
         assert data["total"] == 1
         cantidades = {item["nombre"]: item["cantidad"] for item in data["opciones"]}
         assert cantidades["NIVEL TEST"] == 1
         assert len(data["eventos"]) == 1
         evento = data["eventos"][0]
-        assert evento["alerta_encuesta_id"] == alerta_encuesta_id
-        assert evento["nivel_alerta"] == "NIVEL TEST"
+        assert evento["monitoreo_opcion_id"] == monitoreo_opcion_id
+        assert evento["nombre_opcion_monitoreo"] == "NIVEL TEST"
         assert evento["descripcion"] == "Alerta de prueba"
         assert evento["latitud"] == -0.1806532
         assert evento["longitud"] == -78.4678382
@@ -1873,23 +1877,23 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         assert evento["parroquia"] == "Inaquito"
         assert data["chart_url"].startswith("https://quickchart.io/chart?")
 
-        reporte_barrido = client.get(f"/api/telegram/reportes/barridos/tipo-alerta/{tipo_alerta_id}")
+        reporte_barrido = client.get(f"/api/telegram/reportes/barridos/tipo-alerta/{tipo_monitoreo_alerta_id}")
         assert reporte_barrido.status_code == 200
         data_barrido = reporte_barrido.json()
         assert data_barrido["barrido_id"] == barrido_id
-        assert data_barrido["tipo_alerta_id"] == tipo_alerta_id
-        assert data_barrido["nombre_alerta"] == tipo_alerta_nombre
+        assert data_barrido["tipo_monitoreo_alerta_id"] == tipo_monitoreo_alerta_id
+        assert data_barrido["nombre_tipo_monitoreo_alerta"] == tipo_alerta_nombre
         assert data_barrido["total"] == 1
 
-        lista_barridos = client.get(f"/api/telegram/barridos/tipo-alerta/{tipo_alerta_id}")
+        lista_barridos = client.get(f"/api/telegram/barridos/tipo-alerta/{tipo_monitoreo_alerta_id}")
         assert lista_barridos.status_code == 200
         barrido_item = next(item for item in lista_barridos.json() if item["id"] == barrido_id)
-        assert barrido_item["tipo_alerta_id"] == tipo_alerta_id
-        assert barrido_item["nombre_alerta"] == tipo_alerta_nombre
+        assert barrido_item["tipo_monitoreo_alerta_id"] == tipo_monitoreo_alerta_id
+        assert barrido_item["nombre_tipo_monitoreo_alerta"] == tipo_alerta_nombre
         assert barrido_item["total_respuestas"] == 1
 
         respuesta_por_barrido = client.get(
-            f"/api/telegram/reportes/tipo-alerta/{tipo_alerta_id}/barridos/{barrido_id}"
+            f"/api/telegram/reportes/tipo-alerta/{tipo_monitoreo_alerta_id}/barridos/{barrido_id}"
         )
         assert respuesta_por_barrido.status_code == 200
         assert respuesta_por_barrido.json()["barrido_id"] == barrido_id
@@ -1897,9 +1901,9 @@ def test_endpoint_reporte_alerta_devuelve_json_y_chart_url(monkeypatch) -> None:
         respuestas_barridos = client.get("/api/telegram/barridos/respuestas")
         assert respuestas_barridos.status_code == 200
         respuesta_item = next(item for item in respuestas_barridos.json() if item["barrido_id"] == barrido_id)
-        assert respuesta_item["tipo_alerta_id"] == tipo_alerta_id
-        assert respuesta_item["nombre_alerta"] == tipo_alerta_nombre
-        assert respuesta_item["nivel_alerta"] == "NIVEL TEST"
+        assert respuesta_item["tipo_monitoreo_alerta_id"] == tipo_monitoreo_alerta_id
+        assert respuesta_item["nombre_tipo_monitoreo_alerta"] == tipo_alerta_nombre
+        assert respuesta_item["nombre_opcion_monitoreo"] == "NIVEL TEST"
         assert respuesta_item["contacto_id"] == contacto_id
         assert respuesta_item["latitud"] == -0.1806532
         assert respuesta_item["longitud"] == -78.4678382
@@ -1939,27 +1943,27 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
         _asegurar_tablas_barridos(session)
         _asegurar_tabla_eventos(session)
         tipo_alerta_nombre = f"REPORTE TEST {uuid4().hex[:8]}"
-        tipo_alerta_id = session.execute(
+        tipo_monitoreo_alerta_id = session.execute(
             text(
                 """
-                INSERT INTO tipo_alertas (descripcion, activo)
+                INSERT INTO tipo_monitoreo_alertas (descripcion, activo)
                 VALUES (:descripcion, true)
                 RETURNING id
                 """
             ),
             {"descripcion": tipo_alerta_nombre},
         ).scalar_one()
-        alerta_encuesta_id = session.execute(
+        monitoreo_opcion_id = session.execute(
             text(
                 """
-                INSERT INTO alerta_encuesta
-                    (tipo_alerta_id, tipo_flujo_id, nombre, descripcion, color, orden, activo)
+                INSERT INTO monitoreo_opciones
+                    (tipo_monitoreo_alerta_id, tipo_monitoreo_flujo_id, nombre, descripcion, color, orden, activo)
                 VALUES
-                    (:tipo_alerta_id, 3, 'NIVEL MENU', 'Nivel del menu', 'verde', 1, true)
+                    (:tipo_monitoreo_alerta_id, 3, 'NIVEL MENU', 'Nivel del menu', 'verde', 1, true)
                 RETURNING id
                 """
             ),
-            {"tipo_alerta_id": tipo_alerta_id},
+            {"tipo_monitoreo_alerta_id": tipo_monitoreo_alerta_id},
         ).scalar_one()
         contacto_id = session.execute(
             text(
@@ -1976,23 +1980,23 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
         barrido_id = session.execute(
             text(
                 """
-                INSERT INTO telegram_barridos (tipo_alerta_id, codigo, mensaje)
-                VALUES (:tipo_alerta_id, 'BARRIDO-TELEGRAM', 'Reporte de prueba')
+                INSERT INTO telegram_barridos (tipo_monitoreo_alerta_id, codigo, mensaje)
+                VALUES (:tipo_monitoreo_alerta_id, 'BARRIDO-TELEGRAM', 'Reporte de prueba')
                 RETURNING id
                 """
             ),
-            {"tipo_alerta_id": tipo_alerta_id},
+            {"tipo_monitoreo_alerta_id": tipo_monitoreo_alerta_id},
         ).scalar_one()
         session.execute(
             text(
                 """
                 INSERT INTO telegram_barrido_respuestas
-                    (barrido_id, contacto_id, alerta_encuesta_id, latitud, longitud)
+                    (barrido_id, contacto_id, monitoreo_opcion_id, latitud, longitud)
                 VALUES
-                    (:barrido_id, :contacto_id, :alerta_encuesta_id, -0.1806532, -78.4678382)
+                    (:barrido_id, :contacto_id, :monitoreo_opcion_id, -0.1806532, -78.4678382)
                 """
             ),
-            {"barrido_id": barrido_id, "contacto_id": contacto_id, "alerta_encuesta_id": alerta_encuesta_id},
+            {"barrido_id": barrido_id, "contacto_id": contacto_id, "monitoreo_opcion_id": monitoreo_opcion_id},
         )
         session.execute(
             text(
@@ -2000,8 +2004,8 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
                 INSERT INTO telegram_eventos
                     (
                         contacto_id,
-                        tipo_alerta_id,
-                        alerta_encuesta_id,
+                        tipo_monitoreo_alerta_id,
+                        monitoreo_opcion_id,
                         descripcion,
                         foto_file_id,
                         latitud,
@@ -2010,8 +2014,8 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
                 VALUES
                     (
                         :contacto_id,
-                        :tipo_alerta_id,
-                        :alerta_encuesta_id,
+                        :tipo_monitoreo_alerta_id,
+                        :monitoreo_opcion_id,
                         'Alerta de menu',
                         'foto-alerta',
                         -0.1806532,
@@ -2021,8 +2025,8 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
             ),
             {
                 "contacto_id": contacto_id,
-                "tipo_alerta_id": tipo_alerta_id,
-                "alerta_encuesta_id": alerta_encuesta_id,
+                "tipo_monitoreo_alerta_id": tipo_monitoreo_alerta_id,
+                "monitoreo_opcion_id": monitoreo_opcion_id,
             },
         )
 
@@ -2075,7 +2079,7 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
             == "Seleccione el tipo de alerta del reporte de alertas que desea visualizar:"
         )
         assert any(
-            row[0]["callback_data"] == f"REPORTE_ALERTAS:{tipo_alerta_id}"
+            row[0]["callback_data"] == f"REPORTE_ALERTAS:{tipo_monitoreo_alerta_id}"
             for row in sender.messages[-1]["reply_markup"]["inline_keyboard"]
         )
 
@@ -2089,7 +2093,7 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
                     "message": {
                         "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
                     },
-                    "data": f"REPORTE_ALERTAS:{tipo_alerta_id}",
+                    "data": f"REPORTE_ALERTAS:{tipo_monitoreo_alerta_id}",
                 },
             },
         )
@@ -2124,7 +2128,7 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
             == "Seleccione el tipo de alerta del reporte de barridos que desea visualizar:"
         )
         assert any(
-            row[0]["callback_data"] == f"REPORTE_BARRIDOS:{tipo_alerta_id}"
+            row[0]["callback_data"] == f"REPORTE_BARRIDOS:{tipo_monitoreo_alerta_id}"
             for row in sender.messages[-1]["reply_markup"]["inline_keyboard"]
         )
 
@@ -2138,7 +2142,7 @@ def test_webhook_reportes_muestra_menu_y_envia_texto_con_grafico() -> None:
                     "message": {
                         "chat": {"id": chat_id, "first_name": "GAD", "type": "private"},
                     },
-                    "data": f"REPORTE_BARRIDOS:{tipo_alerta_id}",
+                    "data": f"REPORTE_BARRIDOS:{tipo_monitoreo_alerta_id}",
                 },
             },
         )
@@ -2535,7 +2539,7 @@ def test_endpoint_lista_fotos_eventos() -> None:
         connection.close()
 
 
-def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados(monkeypatch) -> None:
+def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtrados(monkeypatch) -> None:
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, autoflush=False, expire_on_commit=False)
@@ -2548,7 +2552,7 @@ def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados(monkeypatch
             "_resolver_ubicacion_administrativa",
             lambda latitud, longitud: {"provincia": "Guayas", "canton": "Guayaquil", "parroquia": "Tarqui"},
         )
-        _asegurar_tipo_alertas(session)
+        _asegurar_tipo_monitoreo_alertas(session)
         _asegurar_tabla_eventos(session)
         contacto_id = session.execute(
             text(
@@ -2568,7 +2572,7 @@ def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados(monkeypatch
                 INSERT INTO telegram_eventos
                     (
                         contacto_id,
-                        tipo_alerta_id,
+                        tipo_monitoreo_alerta_id,
                         descripcion,
                         cantidad_personas_riesgo,
                         foto_file_id,
@@ -2614,8 +2618,8 @@ def test_endpoint_lista_eventos_con_nombre_alerta_y_campos_filtrados(monkeypatch
         data = respuesta.json()
         item = next(evento for evento in data if evento["id"] == evento_id)
         assert item["contacto_id"] == contacto_id
-        assert item["tipo_alerta_id"] == 6
-        assert item["nombre_alerta"] == "LLUVIAS"
+        assert item["tipo_monitoreo_alerta_id"] == 6
+        assert item["nombre_tipo_monitoreo_alerta"] == "LLUVIAS"
         assert item["descripcion"] == "Lluvia fuerte en la comunidad."
         assert item["cantidad_personas_riesgo"] == 15
         assert item["ubicacion"] == "-0.1806532,-78.4678382"
@@ -2732,10 +2736,10 @@ def test_webhook_evento_con_album_usa_solo_primera_foto() -> None:
             text(
                 """
                 SELECT tc.parametros
-                FROM telegram_consultas tc
+                FROM telegram_interacciones tc
                 JOIN telegram_contactos c ON c.id = tc.contacto_id
                 WHERE c.telefono = :telefono
-                  AND tc.tipo_consulta = 'REPORTE_EVENTO'
+                  AND tc.tipo_interaccion = 'REPORTE_EVENTO'
                 """
             ),
             {"telefono": telefono},
