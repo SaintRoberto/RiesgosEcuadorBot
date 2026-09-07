@@ -800,9 +800,9 @@ def _mensaje_inicio_barrido(
     hora_corte = fecha_hora_barrido + timedelta(hours=1)
     return (
         f"Hola {_nombre_usuario(contacto)} la SNGR ha ejecutado el barrido por {alerta} "
-        f"No. {barrido.id} para el {fecha_hora_barrido.strftime('%d-%m-%Y  %H:%M')}, "
-        f"con corte a las {hora_corte.strftime('%H:%M')}. "
-        f"ayudame registrando como percibes {alerta} en tu ubicacion actual:"
+        f"No. {barrido.id} para el {fecha_hora_barrido.strftime('%d-%m-%Y %H:%M')}, "
+        f"con corte a las {hora_corte.strftime('%d-%m-%Y %H:%M')}. "
+        f"Registra como percibes {alerta} en tu ubicacion actual:"
     )
 
 
