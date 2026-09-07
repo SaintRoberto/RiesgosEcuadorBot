@@ -2,7 +2,7 @@ import json
 import re
 import unicodedata
 from decimal import Decimal
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 
@@ -790,20 +790,18 @@ def _mensaje_saludo_registro(contacto: TelegramContacto, nombre_update: str | No
     return f"Hola {nombre}"
 
 
-def _formatear_fecha_barrido_mensaje(fecha_barrido: date | None) -> str:
-    return (fecha_barrido or date.today()).strftime("%d-%m-%Y")
-
-
 def _mensaje_inicio_barrido(
     contacto: TelegramContacto,
     tipo_monitoreo_alerta: TipoMonitoreoAlerta,
     barrido: TelegramBarrido,
-    fecha_barrido: date | None,
 ) -> str:
     alerta = tipo_monitoreo_alerta.descripcion
+    fecha_hora_barrido = barrido.fecha_barrido
+    hora_corte = fecha_hora_barrido + timedelta(hours=1)
     return (
         f"Hola {_nombre_usuario(contacto)} la SNGR ha ejecutado el barrido por {alerta} "
-        f"No. {barrido.id} para el {_formatear_fecha_barrido_mensaje(fecha_barrido)}, "
+        f"No. {barrido.id} para el {fecha_hora_barrido.strftime('%d-%m-%Y a las %H:%M')}, "
+        f"con corte a las {hora_corte.strftime('%H:%M')}. "
         f"ayudame registrando como percibes {alerta} en tu ubicacion actual:"
     )
 
@@ -1101,7 +1099,7 @@ def _iniciar_reporte_barrido(
     _responder_si_es_posible(
         sender,
         contacto.chat_id,
-        _mensaje_inicio_barrido(contacto, tipo_monitoreo_alerta, barrido, fecha_barrido),
+        _mensaje_inicio_barrido(contacto, tipo_monitoreo_alerta, barrido),
     )
     _enviar_opciones_monitoreo_barrido_si_es_posible(db, sender, contacto.chat_id, registro)
 

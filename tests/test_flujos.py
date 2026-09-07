@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -1486,7 +1487,10 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         assert ejecucion.json()["estado"] == "SCRIPT_BARRIDO_EJECUTADO"
         assert "Barrido id:" in ejecucion.json()["mensaje"]
         barrido_id = int(str(ejecucion.json()["mensaje"]).split("Barrido id: ")[1].split(".")[0])
-        fecha_hoy = flujos.date.today().strftime("%d-%m-%Y")
+        fecha_hora_barrido = session.execute(
+            text("SELECT fecha_barrido FROM telegram_barridos WHERE id = :barrido_id"),
+            {"barrido_id": barrido_id},
+        ).scalar_one()
         mensajes_barrido = [
             mensaje["text"]
             for mensaje in sender.messages
@@ -1495,7 +1499,9 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
         assert len(mensajes_barrido) == 3
         assert (
             f"Hola Usuario Uno la SNGR ha ejecutado el barrido por LLUVIAS No. {barrido_id} "
-            f"para el {fecha_hoy}, ayudame registrando como percibes LLUVIAS en tu ubicacion actual:"
+            f"para el {fecha_hora_barrido.strftime('%d-%m-%Y a las %H:%M')}, "
+            f"con corte a las {(fecha_hora_barrido + timedelta(hours=1)).strftime('%H:%M')}. "
+            f"ayudame registrando como percibes LLUVIAS en tu ubicacion actual:"
         ) in mensajes_barrido
 
         total = session.execute(
