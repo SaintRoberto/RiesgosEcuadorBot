@@ -185,6 +185,7 @@ class TelegramWebhookRespuesta(BaseModel):
 class EventoRespuesta(BaseModel):
     id: int
     contacto_id: int
+    nombres: str | None = None
     tipo_monitoreo_alerta_id: int | None = None
     nombre_tipo_monitoreo_alerta: str | None = None
     monitoreo_opcion_id: int | None = None

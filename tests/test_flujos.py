@@ -2558,13 +2558,18 @@ def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtra
             text(
                 """
                 INSERT INTO telegram_contactos
-                    (telegram_user_id, chat_id, telefono, activo)
+                    (telegram_user_id, chat_id, telefono, nombres, activo)
                 VALUES
-                    (:telegram_user_id, :chat_id, :telefono, true)
+                    (:telegram_user_id, :chat_id, :telefono, :nombres, true)
                 RETURNING id
                 """
             ),
-            {"telegram_user_id": chat_id, "chat_id": chat_id, "telefono": telefono},
+            {
+                "telegram_user_id": chat_id,
+                "chat_id": chat_id,
+                "telefono": telefono,
+                "nombres": "María Pérez",
+            },
         ).scalar_one()
         evento_id = session.execute(
             text(
@@ -2618,6 +2623,7 @@ def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtra
         data = respuesta.json()
         item = next(evento for evento in data if evento["id"] == evento_id)
         assert item["contacto_id"] == contacto_id
+        assert item["nombres"] == "María Pérez"
         assert item["tipo_monitoreo_alerta_id"] == 6
         assert item["nombre_tipo_monitoreo_alerta"] == "LLUVIAS"
         assert item["descripcion"] == "Lluvia fuerte en la comunidad."

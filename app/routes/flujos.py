@@ -3851,15 +3851,20 @@ def listar_eventos(
     db: Session = Depends(get_db),
 ) -> list[EventoRespuesta]:
     filas = db.execute(
-        select(TelegramEvento, TipoMonitoreoAlerta.descripcion.label("nombre_tipo_monitoreo_alerta"))
+        select(
+            TelegramEvento,
+            TipoMonitoreoAlerta.descripcion.label("nombre_tipo_monitoreo_alerta"),
+            TelegramContacto.nombres,
+        )
         .outerjoin(TipoMonitoreoAlerta, TipoMonitoreoAlerta.id == TelegramEvento.tipo_monitoreo_alerta_id)
+        .outerjoin(TelegramContacto, TelegramContacto.id == TelegramEvento.contacto_id)
         .order_by(TelegramEvento.fecha_reporte.desc())
     ).all()
 
     respuesta: list[EventoRespuesta] = []
     ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
     hubo_ubicaciones_actualizadas = False
-    for evento, nombre_tipo_monitoreo_alerta in filas:
+    for evento, nombre_tipo_monitoreo_alerta, nombres in filas:
         latitud = float(evento.latitud)
         longitud = float(evento.longitud)
         if evento.provincia is None or evento.canton is None or evento.parroquia is None:
@@ -3878,6 +3883,7 @@ def listar_eventos(
             EventoRespuesta(
                 id=evento.id,
                 contacto_id=evento.contacto_id,
+                nombres=nombres,
                 tipo_monitoreo_alerta_id=evento.tipo_monitoreo_alerta_id,
                 nombre_tipo_monitoreo_alerta=nombre_tipo_monitoreo_alerta,
                 monitoreo_opcion_id=evento.monitoreo_opcion_id,
