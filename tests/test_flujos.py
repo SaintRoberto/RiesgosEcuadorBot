@@ -2552,8 +2552,19 @@ def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtra
             "_resolver_ubicacion_administrativa",
             lambda latitud, longitud: {"provincia": "Guayas", "canton": "Guayaquil", "parroquia": "Tarqui"},
         )
-        _asegurar_tipo_monitoreo_alertas(session)
+        _asegurar_catalogos_alertas(session)
         _asegurar_tabla_eventos(session)
+        monitoreo_opcion_id = session.execute(
+            text(
+                """
+                SELECT id
+                FROM monitoreo_opciones
+                WHERE tipo_monitoreo_alerta_id = 6
+                  AND tipo_monitoreo_flujo_id = 3
+                  AND orden = 2
+                """
+            )
+        ).scalar_one()
         contacto_id = session.execute(
             text(
                 """
@@ -2578,6 +2589,7 @@ def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtra
                     (
                         contacto_id,
                         tipo_monitoreo_alerta_id,
+                        monitoreo_opcion_id,
                         descripcion,
                         cantidad_personas_riesgo,
                         foto_file_id,
@@ -2590,6 +2602,7 @@ def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtra
                     (
                         :contacto_id,
                         6,
+                        :monitoreo_opcion_id,
                         :descripcion,
                         15,
                         :foto_file_id,
@@ -2603,6 +2616,7 @@ def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtra
             ),
             {
                 "contacto_id": contacto_id,
+                "monitoreo_opcion_id": monitoreo_opcion_id,
                 "descripcion": "Lluvia fuerte en la comunidad.",
                 "foto_file_id": "foto-evento",
                 "foto_file_unique_id": "foto-evento-unique",
@@ -2626,6 +2640,8 @@ def test_endpoint_lista_eventos_con_nombre_tipo_monitoreo_alerta_y_campos_filtra
         assert item["nombres"] == "María Pérez"
         assert item["tipo_monitoreo_alerta_id"] == 6
         assert item["nombre_tipo_monitoreo_alerta"] == "LLUVIAS"
+        assert item["monitoreo_opcion_id"] == monitoreo_opcion_id
+        assert item["nombre_opcion_monitoreo"] == "LLUVIA FUERTE"
         assert item["descripcion"] == "Lluvia fuerte en la comunidad."
         assert item["cantidad_personas_riesgo"] == 15
         assert item["ubicacion"] == "-0.1806532,-78.4678382"

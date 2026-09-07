@@ -3854,9 +3854,11 @@ def listar_eventos(
         select(
             TelegramEvento,
             TipoMonitoreoAlerta.descripcion.label("nombre_tipo_monitoreo_alerta"),
+            MonitoreoOpcion.nombre.label("nombre_opcion_monitoreo"),
             TelegramContacto.nombres,
         )
         .outerjoin(TipoMonitoreoAlerta, TipoMonitoreoAlerta.id == TelegramEvento.tipo_monitoreo_alerta_id)
+        .outerjoin(MonitoreoOpcion, MonitoreoOpcion.id == TelegramEvento.monitoreo_opcion_id)
         .outerjoin(TelegramContacto, TelegramContacto.id == TelegramEvento.contacto_id)
         .order_by(TelegramEvento.fecha_reporte.desc())
     ).all()
@@ -3864,7 +3866,7 @@ def listar_eventos(
     respuesta: list[EventoRespuesta] = []
     ubicaciones_cache: dict[tuple[float, float], dict[str, str | None]] = {}
     hubo_ubicaciones_actualizadas = False
-    for evento, nombre_tipo_monitoreo_alerta, nombres in filas:
+    for evento, nombre_tipo_monitoreo_alerta, nombre_opcion_monitoreo, nombres in filas:
         latitud = float(evento.latitud)
         longitud = float(evento.longitud)
         if evento.provincia is None or evento.canton is None or evento.parroquia is None:
@@ -3887,6 +3889,7 @@ def listar_eventos(
                 tipo_monitoreo_alerta_id=evento.tipo_monitoreo_alerta_id,
                 nombre_tipo_monitoreo_alerta=nombre_tipo_monitoreo_alerta,
                 monitoreo_opcion_id=evento.monitoreo_opcion_id,
+                nombre_opcion_monitoreo=nombre_opcion_monitoreo,
                 descripcion=evento.descripcion,
                 cantidad_personas_riesgo=int(evento.cantidad_personas_riesgo or 0),
                 latitud=latitud,
