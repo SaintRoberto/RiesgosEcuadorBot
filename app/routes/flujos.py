@@ -98,18 +98,18 @@ MENSAJE_SELECCION_NIVEL_LLUVIA = (
     "1) Debil\n2) Moderado\n3) Fuerte\n4) Muy fuerte"
 )
 MENSAJE_SOLICITAR_UBICACION = (
-    "📍 Para registrar el barrido, active el GPS del celular y permita el acceso a ubicacion en Telegram. "
+    "Para registrar el barrido, active el GPS del celular y permita el acceso a ubicacion 📍 en Telegram. "
     "Luego presione Compartir ubicacion."
 )
 MENSAJE_SOLICITAR_UBICACION_EVENTO = (
-    "📍 Para registrar el evento, active el GPS del celular y permita el acceso a ubicacion en Telegram. "
+    "Para registrar el evento, active el GPS del celular y permita el acceso a ubicacion 📍 en Telegram. "
     "Luego presione Compartir ubicacion."
 )
 MENSAJE_UBICACION_BARRIDO_REQUERIDA = (
-    "📍 Aun falta compartir la ubicacion del barrido. Active el GPS y use el boton Compartir ubicacion."
+    "Aun falta compartir la ubicacion 📍 del barrido. Active el GPS y use el boton Compartir ubicacion."
 )
 MENSAJE_UBICACION_EVENTO_REQUERIDA = (
-    "📍 Aun falta compartir la ubicacion del evento. Active el GPS y use el boton Compartir ubicacion."
+    "Aun falta compartir la ubicacion 📍 del evento. Active el GPS y use el boton Compartir ubicacion."
 )
 OPCION_REPORTE_BARRIDO = "Reporte de barrido"
 OPCION_REPORTE_EVENTO = "Reporte de evento"
@@ -1570,7 +1570,7 @@ def _iniciar_reporte_evento(
         registro.parametros = parametros
         registro.estado = "PROCESANDO"
     db.commit()
-    _responder_si_es_posible(sender, contacto.chat_id, "📷 Envie una foto del evento.")
+    _responder_si_es_posible(sender, contacto.chat_id, "Envie una foto 📷 del evento.")
 
 
 def _guardar_foto_evento(
@@ -2126,7 +2126,7 @@ def _recibir_opcion_monitoreo_barrido(
     _responder_si_es_posible(
         sender,
         contacto.chat_id,
-        f"📍 Por favor {_nombre_usuario(contacto)}, ayudame enviando tu ubicacion actual que es donde se esta desarrollando esta alerta:",
+        f"Por favor {_nombre_usuario(contacto)}, ayudame enviando tu ubicacion 📍 actual que es donde se esta desarrollando esta alerta:",
         reply_markup=_teclado_solicitar_ubicacion(),
     )
     return TelegramWebhookRespuesta(
@@ -2197,7 +2197,7 @@ def _recibir_opcion_monitoreo_alerta(
     _responder_si_es_posible(
         sender,
         contacto.chat_id,
-        f"📍 Por favor {_nombre_usuario(contacto)}, ayudame enviando tu ubicacion actual que es donde se esta desarrollando esta alerta:",
+        f"Por favor {_nombre_usuario(contacto)}, ayudame enviando tu ubicacion 📍 actual que es donde se esta desarrollando esta alerta:",
         reply_markup=_teclado_solicitar_ubicacion(),
     )
     return TelegramWebhookRespuesta(
@@ -2240,7 +2240,7 @@ def _recibir_riesgo_personas_alerta(
         mensaje = "Aproximadamente, ¿cuantas personas estan en riesgo?"
         estado = "ALERTA_RIESGO_PERSONAS_CONFIRMADO"
     else:
-        mensaje = "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+        mensaje = "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:"
         estado = "ALERTA_RIESGO_PERSONAS_DESCARTADO"
     _responder_si_es_posible(sender, contacto.chat_id, mensaje)
     return TelegramWebhookRespuesta(
@@ -2298,7 +2298,7 @@ def _recibir_callback_menu_principal(
             if hay_personas_en_riesgo:
                 mensaje = "Ingrese solo numeros, maximo 6 digitos."
             else:
-                mensaje = "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+                mensaje = "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:"
             _responder_si_es_posible(sender, int(chat_id), mensaje)
             return TelegramWebhookRespuesta(
                 estado="BARRIDO_RIESGO_PERSONAS_CONFIRMADO",
@@ -3004,7 +3004,7 @@ def recibir_webhook_telegram(
                 elif paso_evento == PASO_ALERTA_CANTIDAD_PERSONAS:
                     mensaje_alerta = "Aproximadamente, ¿cuantas personas estan en riesgo?"
                 elif paso_evento == PASO_ALERTA_FOTO:
-                    mensaje_alerta = "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+                    mensaje_alerta = "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:"
                 else:
                     mensaje_alerta = "El reporte de alerta ya tiene una ubicacion registrada."
                 _responder_si_es_posible(sender, int(chat_id), mensaje_alerta)
@@ -3039,7 +3039,7 @@ def recibir_webhook_telegram(
                 )
 
             if paso_evento == PASO_EVENTO_FOTO:
-                _responder_si_es_posible(sender, int(chat_id), "📷 Primero envie una foto del evento.")
+                _responder_si_es_posible(sender, int(chat_id), "Primero envie una foto 📷 del evento.")
                 return TelegramWebhookRespuesta(
                     estado="FOTO_EVENTO_REQUERIDA",
                     mensaje="Se recibio ubicacion, pero el reporte de evento espera una foto.",
@@ -3111,7 +3111,7 @@ def recibir_webhook_telegram(
             elif paso_barrido == PASO_BARRIDO_CANTIDAD_PERSONAS:
                 mensaje_barrido = "Aproximadamente, ¿cuantas personas estan en riesgo?"
             elif paso_barrido == PASO_BARRIDO_FOTO:
-                mensaje_barrido = "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:"
+                mensaje_barrido = "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:"
             else:
                 mensaje_barrido = "El reporte de barrido ya tiene una ubicacion registrada."
             _responder_si_es_posible(sender, int(chat_id), mensaje_barrido)
@@ -3155,7 +3155,7 @@ def recibir_webhook_telegram(
                     sender,
                     int(chat_id),
                     (
-                        f"📍 Por favor {_nombre_usuario(contacto_evento)}, ayudame enviando tu ubicacion actual que "
+                        f"Por favor {_nombre_usuario(contacto_evento)}, ayudame enviando tu ubicacion 📍 actual que "
                         "es donde se esta desarrollando esta alerta:"
                     ),
                     reply_markup=_teclado_solicitar_ubicacion(),
@@ -3240,7 +3240,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                    "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:",
                 )
                 return TelegramWebhookRespuesta(
                     estado="ALERTA_CANTIDAD_PERSONAS_RECIBIDA",
@@ -3253,7 +3253,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                    "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:",
                 )
                 return TelegramWebhookRespuesta(
                     estado="ALERTA_FOTO_REQUERIDA",
@@ -3280,7 +3280,7 @@ def recibir_webhook_telegram(
                     sender,
                     int(chat_id),
                     (
-                        f"📍 Por favor {_nombre_usuario(contacto_barrido_texto)}, ayudame enviando tu ubicacion actual "
+                        f"Por favor {_nombre_usuario(contacto_barrido_texto)}, ayudame enviando tu ubicacion 📍 actual "
                         "que es donde se esta desarrollando esta alerta:"
                     ),
                     reply_markup=_teclado_solicitar_ubicacion(),
@@ -3361,7 +3361,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                    "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:",
                 )
                 return TelegramWebhookRespuesta(
                     estado="BARRIDO_CANTIDAD_PERSONAS_RECIBIDA",
@@ -3374,7 +3374,7 @@ def recibir_webhook_telegram(
                 _responder_si_es_posible(
                     sender,
                     int(chat_id),
-                    "📷 ¡Perfecto!, para finalizar ayudame con una fotografia de la alerta para mayor detalle:",
+                    "¡Perfecto!, para finalizar ayudame con una fotografia 📷 de la alerta para mayor detalle:",
                 )
                 return TelegramWebhookRespuesta(
                     estado="BARRIDO_FOTO_REQUERIDA",
@@ -3384,7 +3384,7 @@ def recibir_webhook_telegram(
                     chat_id=contacto_barrido_texto.chat_id,
                 )
         if contacto_evento and registro_evento and paso_evento == PASO_EVENTO_FOTO:
-            _responder_si_es_posible(sender, int(chat_id), "📷 Primero envie una foto del evento.")
+            _responder_si_es_posible(sender, int(chat_id), "Primero envie una foto 📷 del evento.")
             return TelegramWebhookRespuesta(
                 estado="FOTO_EVENTO_REQUERIDA",
                 mensaje="El reporte de evento espera una foto.",
