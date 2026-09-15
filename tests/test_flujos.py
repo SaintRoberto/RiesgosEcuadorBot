@@ -1,6 +1,5 @@
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -25,10 +24,13 @@ class FakeTelegramSender:
         chat_id: int,
         text: str,
         reply_markup: dict[str, object] | None = None,
+        parse_mode: str | None = None,
     ) -> dict[str, object]:
         result = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             result["reply_markup"] = reply_markup
+        if parse_mode is not None:
+            result["parse_mode"] = parse_mode
         self.messages.append(result)
         return {"ok": True, "result": result}
 
@@ -1492,17 +1494,16 @@ def test_webhook_scripts_ejecuta_barrido_lluvia() -> None:
             {"barrido_id": barrido_id},
         ).scalar_one()
         mensajes_barrido = [
-            mensaje["text"]
+            mensaje
             for mensaje in sender.messages
-            if str(mensaje["text"]).startswith("Hola ") and "ha ejecutado el barrido" in str(mensaje["text"])
+            if str(mensaje["text"]).startswith("<b>BARRIDO DE LLUVIAS")
         ]
         assert len(mensajes_barrido) == 3
-        assert (
-            f"Hola Usuario Uno la SNGR ha ejecutado el barrido por LLUVIAS No. {barrido_id} "
-            f"para el {fecha_hora_barrido.strftime('%d-%m-%Y a las %H:%M')}, "
-            f"con corte a las {(fecha_hora_barrido + timedelta(hours=1)).strftime('%H:%M')}. "
-            f"ayudame registrando como percibes LLUVIAS en tu ubicacion actual:"
-        ) in mensajes_barrido
+        assert mensajes_barrido[0]["parse_mode"] == "HTML"
+        assert mensajes_barrido[0]["text"] == (
+            f"<b>BARRIDO DE LLUVIAS NO  {barrido_id} - {fecha_hora_barrido.strftime('%d/%m/%Y %HH%M')}.</b>\n"
+            "Bienvenido Usuario Uno, ayúdame reportando como están las lluvias en la zona donde te encuentras."
+        )
 
         total = session.execute(
             text(

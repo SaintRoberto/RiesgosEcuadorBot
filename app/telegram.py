@@ -13,6 +13,7 @@ class TelegramSender(Protocol):
         chat_id: int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None,
     ) -> dict[str, Any]:
         pass
 
@@ -69,10 +70,13 @@ class TelegramBotSender:
         chat_id: int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
         return self._post("sendMessage", payload)
 
     def send_poll(self, chat_id: int, question: str, options: list[str]) -> dict[str, Any]:
