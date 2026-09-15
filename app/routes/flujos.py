@@ -797,13 +797,22 @@ def _mensaje_inicio_barrido(
 ) -> str:
     alerta = tipo_monitoreo_alerta.descripcion
     fecha_hora_barrido = barrido.fecha_barrido
-    hora_corte = fecha_hora_barrido + timedelta(hours=1)
+    evento_barrido_seleccionado = alerta.lower()
     return (
-        f"Hola {_nombre_usuario(contacto)} la SNGR ha ejecutado el barrido por {alerta} "
-        f"No. {barrido.id} correspondiente al {fecha_hora_barrido.strftime('%d-%m-%Y a las %H:%M')}, "
-        f"con corte a las {hora_corte.strftime('%d-%m-%Y %H:%M')}. "
-        f"Registra como percibes {alerta} en tu ubicacion actual:"
+        f"**BARRIDO DE {alerta.upper()} NO  {barrido.id} - {fecha_hora_barrido.strftime('%d/%m/%Y %HH%M')}.**\n"
+        f"Bienvenido {_nombre_usuario(contacto)}, ayúdame reportando como está "
+        f"{evento_barrido_seleccionado} en la zona donde te encuentras."
     )
+    
+# Por fa al barrido al mensaje inicialque diga: BARRIDO DE LLUVIAS NO  34 - 12/09/2026 15H00
+# Bienvenido Stalin, ayúdame reportando como están las lluvias en la zona donde te encuentras
+
+#return (
+#        f"Hola {_nombre_usuario(contacto)} la SNGR ha ejecutado el barrido por {alerta} "
+#        f"No. {barrido.id} correspondiente al {fecha_hora_barrido.strftime('%d-%m-%Y a las %H:%M')}, "
+#        f"con corte a las {hora_corte.strftime('%d-%m-%Y %H:%M')}. "
+#        f"Registra como percibes {alerta} en tu ubicacion actual:"
+#    )
 
 
 def _mensaje_menu_principal(contacto: TelegramContacto, nombre_update: str | None = None) -> str:
